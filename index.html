@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d6b62">
+<style>
+/* base reset (matches the claude.ai artifact skeleton) */
+:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+img{max-width:100%}
+[hidden]{display:none!important}
+</style>
+<title>Bills Account Tracker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a check-register for one account. Summary up top, then upcoming money grouped by pay period with a running balance column. */
+:root{
+  --bg:#eef2f0; --surface:#ffffff; --surface-2:#f6f8f7; --line:#d9e1dd;
+  --ink:#13201b; --muted:#5a6a63; --accent:#0d6b62; --accent-ink:#ffffff; --accent-soft:#d8ece8;
+  --pos:#137a3a; --neg:#b42318; --warn:#9a5a00; --warn-soft:#fbefd9; --neg-soft:#fbe4e1;
+  --f-ui:"Manrope",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-num:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0d1412; --surface:#151f1c; --surface-2:#1a2622; --line:#2a3833;
+  --ink:#e4ece9; --muted:#93a39d; --accent:#4cc3b2; --accent-ink:#06201c; --accent-soft:#163631;
+  --pos:#5fd38a; --neg:#ff8a7e; --warn:#f2b84b; --warn-soft:#33280f; --neg-soft:#3a1a17; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0d1412; --surface:#151f1c; --surface-2:#1a2622; --line:#2a3833;
+  --ink:#e4ece9; --muted:#93a39d; --accent:#4cc3b2; --accent-ink:#06201c; --accent-soft:#163631;
+  --pos:#5fd38a; --neg:#ff8a7e; --warn:#f2b84b; --warn-soft:#33280f; --neg-soft:#3a1a17; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-ui);font-size:15px;line-height:1.45}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--surface)}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.pos{color:var(--pos)} .neg{color:var(--neg)} .muted{color:var(--muted)}
+h1,h2,h3{margin:0;text-wrap:balance}
+h2{font-size:1.05rem;font-weight:800}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border-bottom:1px solid var(--line)}
+.wrap{max-width:980px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.brand{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-block:12px 6px}
+.brand h1{font-size:1.05rem;font-weight:800;letter-spacing:-.01em}
+.sync{font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.dot.ok{background:var(--pos)} .dot.busy{background:var(--warn)} .dot.local{background:var(--neg)}
+nav.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+nav.tabs::-webkit-scrollbar{display:none}
+nav.tabs a{padding:9px 10px 10px;text-decoration:none;color:var(--muted);font-weight:700;font-size:.9rem;border-bottom:2.5px solid transparent;white-space:nowrap}
+nav.tabs a[aria-current="page"]{color:var(--ink);border-bottom-color:var(--accent)}
+
+main.wrap{padding-block:18px 64px;display:flex;flex-direction:column;gap:18px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+.pad{padding:16px}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:9px 14px;font-weight:700;font-size:.9rem;cursor:pointer;min-height:40px}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.danger{color:var(--neg)}
+.btn.small{padding:5px 10px;min-height:32px;font-size:.82rem}
+.btn.link{border:none;background:none;padding:4px 6px;min-height:0;color:var(--accent)}
+.row-btns{display:flex;gap:8px;flex-wrap:wrap}
+
+/* hero */
+.hero{display:grid;grid-template-columns:1.25fr 1fr;gap:0;overflow:hidden}
+.hero-main{padding:20px;display:flex;flex-direction:column;gap:10px;background:var(--accent-soft)}
+.eyebrow{font-size:.72rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.big{font-family:var(--f-num);font-variant-numeric:tabular-nums;font-size:clamp(2.2rem,7vw,3.1rem);font-weight:600;line-height:1;letter-spacing:-.03em}
+.hero-note{color:var(--muted);font-size:.9rem;max-width:44ch}
+.stats{display:grid;grid-template-columns:1fr 1fr;border-left:1px solid var(--line)}
+.stat{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:3px;min-width:0}
+.stat:nth-child(odd){border-right:1px solid var(--line)}
+.stat:nth-last-child(-n+2){border-bottom:none}
+.stat .v{font-family:var(--f-num);font-variant-numeric:tabular-nums;font-size:1.2rem;font-weight:600}
+.stat .s{font-size:.78rem;color:var(--muted)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:.78rem;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--warn-soft);color:var(--warn);width:fit-content}
+.chip.neg{background:var(--neg-soft);color:var(--neg)}
+
+/* register */
+.register{width:100%;border-collapse:collapse}
+.register th{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:800;text-align:left;padding:8px 12px;border-bottom:1px solid var(--line)}
+.register td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.register tr:last-child td{border-bottom:none}
+.register .amt,.register .bal,.register th.r{text-align:right;white-space:nowrap}
+.register .date{white-space:nowrap;color:var(--muted);font-size:.85rem;width:1%}
+.register .act{width:1%;text-align:right}
+.period-row td{background:var(--surface-2);font-weight:800;font-size:.85rem;padding-block:9px}
+.period-row .end{font-family:var(--f-num);font-weight:600}
+.item-name{font-weight:700}
+.item-sub{font-size:.78rem;color:var(--muted)}
+.item-sub.warn{color:var(--warn);font-weight:700}
+.reg-scroll{overflow-x:auto}
+.low td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
+.prow{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;align-items:baseline}
+.show-sm{display:none}
+
+.check{width:34px;height:34px;border-radius:50%;border:1.5px solid var(--line);background:var(--surface);cursor:pointer;display:inline-grid;place-items:center;color:var(--muted)}
+.check:hover{border-color:var(--accent);color:var(--accent)}
+.check svg{width:16px;height:16px}
+
+/* lists */
+.list{display:flex;flex-direction:column}
+.li{display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid var(--line)}
+.li:first-child{border-top:none}
+.li .grow{flex:1;min-width:0}
+.li .amt{text-align:right;white-space:nowrap}
+.tag{font-size:.7rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:5px;background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+.tag.accent{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0}
+.summary-grid > div{padding:14px 16px;border-left:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
+.summary-grid > div:first-child{border-left:none}
+.summary-grid .v{font-family:var(--f-num);font-size:1.15rem;font-weight:600}
+
+.banner{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;border-radius:var(--r);background:var(--warn-soft);color:var(--warn);font-weight:700;font-size:.9rem}
+.empty{padding:28px 16px;text-align:center;color:var(--muted)}
+.setup{display:flex;flex-direction:column;gap:0}
+.step{display:flex;align-items:center;gap:14px;padding:14px 16px;border-top:1px solid var(--line)}
+.step:first-of-type{border-top:none}
+.step .n{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:.85rem;background:var(--surface-2);border:1px solid var(--line);flex:none}
+.step.done .n{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.step .grow{flex:1;min-width:0}
+
+/* forms / dialog */
+dialog{border:none;padding:0;border-radius:14px;background:var(--surface);color:var(--ink);width:min(480px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+dialog::backdrop{background:rgba(8,14,12,.55)}
+.dlg{padding:20px;display:flex;flex-direction:column;gap:14px}
+.dlg h3{font-size:1.1rem;font-weight:800}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label,.lbl{font-size:.8rem;font-weight:700;color:var(--muted)}
+.field input,.field select,.field textarea{border:1px solid var(--line);background:var(--surface-2);border-radius:8px;padding:10px 12px;min-height:42px;width:100%}
+.field textarea{font-family:var(--f-num);font-size:.78rem;min-height:120px;resize:vertical}
+.field .hint{font-size:.78rem;color:var(--muted)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.dlg-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding-top:4px}
+.choice{display:flex;flex-direction:column;gap:8px}
+.choice .btn{justify-content:flex-start;text-align:left;padding:12px 14px}
+.err{color:var(--neg);font-size:.85rem;font-weight:700}
+.inline-check{display:flex;align-items:center;gap:8px;font-weight:600;font-size:.9rem}
+.inline-check input{width:18px;height:18px}
+.preview{font-size:.85rem;color:var(--muted);background:var(--surface-2);border-radius:8px;padding:10px 12px}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:700;font-size:.9rem;z-index:20;display:flex;gap:12px;align-items:center;max-width:calc(100vw - 32px)}
+.toast button{background:none;border:none;color:var(--bg);text-decoration:underline;font-weight:800;cursor:pointer}
+
+@media (max-width:760px){
+  .hero{grid-template-columns:1fr}
+  .stats{border-left:none;border-top:1px solid var(--line)}
+}
+@media (max-width:520px){
+  .register .hide-sm{display:none}
+  .register .show-sm{display:block}
+  .register td,.register th{padding-left:8px;padding-right:8px}
+  .summary-grid{grid-template-columns:1fr}
+  .summary-grid > div{border-left:none;border-top:1px solid var(--line)}
+  .summary-grid > div:first-child{border-top:none}
+  .two{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <h1>Bills Account</h1>
+      <div class="sync" id="sync"><span class="dot busy"></span><span>Loading…</span></div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#overview">Overview</a>
+      <a href="#bills">Bills</a>
+      <a href="#debts">Debts</a>
+      <a href="#activity">Activity</a>
+      <a href="#paycheck">Paycheck</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap" id="main">
+  <div class="card empty">Loading your bills account…</div>
+</main>
+
+<dialog id="dlg"><div id="dlg-body"></div></dialog>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(() => {
+"use strict";
+
+/* ---------- utilities ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const pad = n => String(n).padStart(2, "0");
+const ymd = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+const parseD = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const today = () => ymd(new Date());
+const addDays = (s, n) => { const d = parseD(s); d.setDate(d.getDate() + n); return ymd(d); };
+const diffDays = (a, b) => Math.round((parseD(b) - parseD(a)) / 86400000);
+const dim = (y, m) => new Date(y, m + 1, 0).getDate();
+const monthDate = (y, m, day) => { const f = new Date(y, m, 1); y = f.getFullYear(); m = f.getMonth(); return ymd(new Date(y, m, Math.min(day, dim(y, m)))); };
+const addMonths = (s, k, day) => { const d = parseD(s); return monthDate(d.getFullYear(), d.getMonth() + k, day || d.getDate()); };
+const monthsBetween = (a, b) => { const x = parseD(a), y = parseD(b); return (y.getFullYear() - x.getFullYear()) * 12 + y.getMonth() - x.getMonth(); };
+const maxD = (a, b) => a > b ? a : b;
+
+const fmt = (c, opts = {}) => {
+  const n = Math.abs(c) / 100;
+  const s = "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (c < 0) return "−" + s;
+  return (opts.plus && c > 0 ? "+" : "") + s;
+};
+const parseMoney = str => {
+  const t = String(str ?? "").replace(/[$,\s]/g, "");
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? Math.round(n * 100) : NaN;
+};
+const moneyIn = c => c == null ? "" : (c / 100).toFixed(2);
+const fmtDate = (s, long) => parseD(s).toLocaleDateString("en-US", long ? { weekday: "short", month: "short", day: "numeric", year: "numeric" } : { weekday: "short", month: "short", day: "numeric" });
+const shortDate = s => parseD(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const ordinal = n => n + (["th","st","nd","rd"][(n % 100 - 20) % 10] || ["th","st","nd","rd"][n % 100] || "th");
+const relDay = s => { const d = diffDays(today(), s); return d === 0 ? "today" : d === 1 ? "tomorrow" : d === -1 ? "yesterday" : d > 0 ? "in " + d + " days" : -d + " days ago"; };
+
+const FREQ = {
+  weekly: { label: "Every week", per: 52 / 12 },
+  biweekly: { label: "Every 2 weeks", per: 26 / 12 },
+  semimonthly: { label: "Twice a month", per: 2 },
+  monthly: { label: "Every month", per: 1 },
+  quarterly: { label: "Every 3 months", per: 1 / 3 },
+  yearly: { label: "Every year", per: 1 / 12 },
+  once: { label: "One time", per: 0 }
+};
+
+/* dates a rule lands on within [from, to] */
+function occ(rule, from, to) {
+  const out = [];
+  if (!rule || from > to) return out;
+  const f = rule.freq;
+  if (f === "weekly" || f === "biweekly") {
+    const step = f === "weekly" ? 7 : 14;
+    const k = Math.ceil(diffDays(rule.anchor, from) / step);
+    let cur = addDays(rule.anchor, k * step);
+    while (cur <= to) { if (cur >= from) out.push(cur); cur = addDays(cur, step); }
+  } else if (f === "monthly" || f === "semimonthly") {
+    const days = f === "monthly" ? [rule.day] : [rule.day, rule.day2].sort((a, b) => a - b);
+    const s = parseD(from); const n = monthsBetween(from, to);
+    for (let i = 0; i <= n; i++) for (const d of days) {
+      const dt = monthDate(s.getFullYear(), s.getMonth() + i, d);
+      if (dt >= from && dt <= to && !out.includes(dt)) out.push(dt);
+    }
+  } else if (f === "quarterly" || f === "yearly") {
+    const step = f === "quarterly" ? 3 : 12;
+    const day = parseD(rule.anchor).getDate();
+    let k = Math.floor(monthsBetween(rule.anchor, from) / step) - 1;
+    for (let guard = 0; guard < 200; guard++, k++) {
+      const dt = addMonths(rule.anchor, k * step, day);
+      if (dt > to) break;
+      if (dt >= from) out.push(dt);
+    }
+  } else if (f === "once") {
+    if (rule.anchor >= from && rule.anchor <= to) out.push(rule.anchor);
+  }
+  return out;
+}
+
+/* ---------- state ---------- */
+const blank = () => ({ v: 1, balance: 0, balanceSet: false, balanceAt: null, cushion: 10000, periods: 2,
+  pay: null, bills: [], paid: [], received: [], debts: [], log: [], example: false });
+let state = null;
+function normalize(d) {
+  const s = Object.assign(blank(), d || {});
+  for (const k of ["bills", "paid", "received", "debts", "log"]) if (!Array.isArray(s[k])) s[k] = [];
+  return s;
+}
+
+/* ---------- persistence: claude.ai db, falling back to this browser ---------- */
+const LS_KEY = "bills-account-v1";
+let mode = "loading"; // "db" | "local" | "loading"
+let docRef = null, dirty = false, writing = false, saveTimer = null, loadTimer = null;
+
+function setSync(kind, text) {
+  $("#sync").innerHTML = `<span class="dot ${kind}"></span><span>${esc(text)}</span>`;
+}
+function useLocal(reason) {
+  if (mode === "local") return;
+  mode = "local";
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
+  state = normalize(saved);
+  setSync("local", reason || "This device only");
+  render();
+}
+function save() {
+  dirty = true;
+  if (mode === "local") {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {}
+    dirty = false; return;
+  }
+  setSync("busy", "Saving…");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flush, 350);
+}
+async function flush() {
+  if (!docRef || writing) return;
+  writing = true; dirty = false;
+  try {
+    await docRef.set(JSON.parse(JSON.stringify(state)));
+    setSync("ok", "Synced");
+  } catch (e) {
+    setSync("local", "Not saved – " + (e && e.code === "not_granted" ? "permission needed" : "retrying"));
+    dirty = true;
+    setTimeout(flush, 4000);
+  } finally {
+    writing = false;
+    if (dirty) flush();
+  }
+}
+async function init() {
+  if (!window.claude || typeof window.claude.use !== "function") { useLocal("This device only"); return; }
+  loadTimer = setTimeout(() => { if (mode === "loading") useLocal("Couldn't reach sync – this device only"); }, 10000);
+  try {
+    const [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]);
+    if (!db || !user) { clearTimeout(loadTimer); useLocal("Sign in to sync – this device only"); return; }
+    const id = await user.id();
+    docRef = db.collection("data/users/" + id).doc("budget");
+    docRef.onSnapshot(snap => {
+      clearTimeout(loadTimer);
+      if (mode === "local") return;
+      if (snap.metadata && snap.metadata.hasPendingWrites) return;
+      if (dirty || writing) return;
+      mode = "db";
+      state = normalize(snap.exists ? snap.data() : null);
+      setSync("ok", "Synced");
+      render();
+    }, err => {
+      clearTimeout(loadTimer);
+      if (mode === "loading") useLocal("Sync unavailable – this device only");
+      else setSync("local", "Sync paused");
+    });
+  } catch (e) {
+    clearTimeout(loadTimer);
+    useLocal("Sync unavailable – this device only");
+  }
+}
+
+/* ---------- projection ---------- */
+function payRule() {
+  const p = state.pay;
+  if (!p || !p.anchor || !p.freq) return null;
+  const r = { freq: p.freq, anchor: p.anchor, day: parseD(p.anchor).getDate() };
+  if (p.freq === "semimonthly") { r.day = p.day1 || 1; r.day2 = p.day2 || 15; }
+  return r;
+}
+function billRule(b) { return { freq: b.freq, anchor: b.anchor || b.since, day: b.day || 1 }; }
+
+function project() {
+  const T = today();
+  const rule = payRule();
+  const N = Math.max(1, state.periods || 2);
+  const paid = new Set(state.paid), recv = new Set(state.received);
+  let pays = [], horizonEnd;
+  if (rule) {
+    pays = occ(rule, addDays(T, 1), addDays(T, 40 * (N + 2))).filter(d => !recv.has(d)).slice(0, N + 1);
+    // if today itself is a payday that hasn't landed yet, treat it as the first boundary
+    if (occ(rule, T, T).length && !recv.has(T)) pays = [T, ...pays].slice(0, N + 1);
+    horizonEnd = pays.length > N ? addDays(pays[N], -1) : addDays(T, 30 * N);
+  } else {
+    horizonEnd = addDays(T, 30);
+  }
+  const events = [];
+  if (rule) {
+    const since = state.pay.since || T;
+    for (const d of occ(rule, maxD(since, addDays(T, -31)), horizonEnd)) {
+      if (recv.has(d)) continue;
+      events.push({ kind: "pay", key: d, orig: d, date: d < T ? T : d, overdue: d < T, amount: state.pay.amount || 0, name: "Paycheck" });
+    }
+  }
+  for (const b of state.bills) {
+    if (b.active === false) continue;
+    const from = maxD(b.since || T, addDays(T, -60));
+    for (const d of occ(billRule(b), from, horizonEnd)) {
+      const key = b.id + "|" + d;
+      if (paid.has(key)) continue;
+      events.push({ kind: "bill", key, orig: d, date: d < T ? T : d, overdue: d < T, amount: b.amount, name: b.name, bill: b });
+    }
+  }
+  events.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.kind === b.kind ? (a.orig < b.orig ? -1 : 1) : a.kind === "pay" ? -1 : 1));
+
+  let run = state.balance, min = state.balance, minDate = T, shortDate = null;
+  for (const e of events) {
+    run += e.kind === "pay" ? e.amount : -e.amount;
+    e.after = run;
+    if (run < min) { min = run; minDate = e.date; }
+    if (run < 0 && !shortDate) shortDate = e.date;
+  }
+  // periods
+  const bounds = [T, ...pays.filter(p => p > T)];
+  const periods = [];
+  for (let i = 0; i < bounds.length && periods.length <= N; i++) {
+    const start = bounds[i];
+    const end = i + 1 < bounds.length ? addDays(bounds[i + 1], -1) : horizonEnd;
+    if (start > horizonEnd) break;
+    periods.push({ start, end, events: [], payday: i > 0 || (pays[0] === T) });
+  }
+  if (!periods.length) periods.push({ start: T, end: horizonEnd, events: [] });
+  let carry = state.balance;
+  for (const p of periods) {
+    p.startBal = carry;
+    p.events = events.filter(e => e.date >= p.start && e.date <= p.end);
+    p.bills = p.events.filter(e => e.kind === "bill").reduce((s, e) => s + e.amount, 0);
+    p.billCount = p.events.filter(e => e.kind === "bill").length;
+    p.income = p.events.filter(e => e.kind === "pay").reduce((s, e) => s + e.amount, 0);
+    p.endBal = carry + p.income - p.bills;
+    carry = p.endBal;
+  }
+  const safe = Math.max(0, min - (state.cushion || 0));
+  const nextPay = events.find(e => e.kind === "pay" && !e.overdue) || (pays[0] ? { date: pays[0], amount: state.pay.amount } : null);
+  return { T, events, periods, min, minDate, shortDate, safe, horizonEnd, nextPay, hasPay: !!rule };
+}
+
+/* ---------- mutations ---------- */
+function logEntry(e) {
+  state.log.unshift(Object.assign({ id: uid(), t: new Date().toISOString() }, e));
+  if (state.log.length > 400) state.log.length = 400;
+}
+function prune() {
+  const cutoff = addDays(today(), -150);
+  state.paid = state.paid.filter(k => (k.split("|")[1] || "") >= cutoff);
+  state.received = state.received.filter(d => d >= cutoff);
+}
+function commit(msg, undoId) { prune(); save(); render(); if (msg) toast(msg, undoId); }
+
+function markBill(ev, amount, deduct) {
+  state.paid.push(ev.key);
+  if (deduct) state.balance -= amount;
+  logEntry({ type: "bill", label: ev.name, amount: deduct ? -amount : 0, note: deduct ? "Bill came out" : "Marked paid (already in balance)", key: ev.key, due: ev.orig });
+  commit(deduct ? `${ev.name} paid · ${fmt(-amount)}` : `${ev.name} marked paid`, state.log[0].id);
+}
+function markPay(ev, amount, add) {
+  state.received.push(ev.key);
+  if (add) state.balance += amount;
+  logEntry({ type: "pay", label: "Paycheck", amount: add ? amount : 0, note: add ? "Deposit landed" : "Marked received (already in balance)", rkey: ev.key, due: ev.orig });
+  commit(add ? `Paycheck added · ${fmt(amount, { plus: true })}` : "Paycheck marked received", state.log[0].id);
+}
+function undo(id) {
+  const i = state.log.findIndex(l => l.id === id);
+  if (i < 0) return;
+  const l = state.log[i];
+  state.balance -= l.amount || 0;
+  if (l.key) state.paid = state.paid.filter(k => k !== l.key);
+  if (l.rkey) state.received = state.received.filter(k => k !== l.rkey);
+  if (l.debtId) { const d = state.debts.find(x => x.id === l.debtId); if (d) d.balance += -(l.amount || 0); }
+  state.log.splice(i, 1);
+  commit("Undone");
+}
+
+/* ---------- example data ---------- */
+function loadExample() {
+  const T = today();
+  const fri = addDays(T, ((5 - parseD(T).getDay() + 7) % 7) || 7);
+  state = normalize({
+    example: true, balance: 124000, balanceSet: true, balanceAt: new Date().toISOString(), cushion: 10000, periods: 2,
+    pay: { amount: 115000, freq: "biweekly", anchor: fri, day1: 1, day2: 15, since: T },
+    bills: [
+      ["Rent", 110000, 1], ["Internet", 7000, 8], ["Car payment", 38500, 12], ["Car insurance", 16800, 15],
+      ["Electric", 14000, 20], ["Phone", 8500, 25], ["Streaming", 2300, 28]
+    ].map(([name, amount, day]) => ({ id: uid(), name, amount, freq: "monthly", day, anchor: T, since: T, autopay: true, active: true })),
+    debts: [
+      { id: uid(), name: "Visa", balance: 342000, apr: 24.99, min: 9500 },
+      { id: uid(), name: "Store card", balance: 86000, apr: 29.9, min: 3500 }
+    ]
+  });
+  commit("Example numbers loaded");
+}
+
+/* ---------- rendering ---------- */
+const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+const VIEWS = ["overview", "bills", "debts", "activity", "paycheck"];
+function view() { const h = location.hash.slice(1); return VIEWS.includes(h) ? h : "overview"; }
+
+function render() {
+  if (!state) return;
+  const v = view();
+  document.querySelectorAll("#tabs a").forEach(a => a.setAttribute("aria-current", a.getAttribute("href") === "#" + v ? "page" : "false"));
+  let html = "";
+  if (state.example) html += `<div class="banner"><span>You're looking at example numbers.</span><button class="btn small" data-a="clear-example">Clear and start with mine</button></div>`;
+  if (mode === "local") html += `<div class="banner"><span>Saving to this browser only. Open this page from your claude.ai account to keep your phone and computer in sync.</span></div>`;
+  html += ({ overview: vOverview, bills: vBills, debts: vDebts, activity: vActivity, paycheck: vPaycheck })[v]();
+  $("#main").innerHTML = html;
+}
+
+function vSetup() {
+  const s1 = state.balanceSet, s2 = !!state.pay, s3 = state.bills.length > 0;
+  const step = (done, n, title, sub, action, label) => `<div class="step ${done ? "done" : ""}"><span class="n">${done ? "✓" : n}</span><div class="grow"><div class="item-name">${title}</div><div class="item-sub">${sub}</div></div><button class="btn small ${done ? "" : "primary"}" data-a="${action}">${done ? "Edit" : label}</button></div>`;
+  return `<section class="card setup">
+    <div class="pad"><h2>Set up your bills account</h2><p class="muted" style="margin:4px 0 0">Three things and you'll see how much extra you can throw at your cards.</p></div>
+    ${step(s1, 1, "Current balance", s1 ? fmt(state.balance) + " in the account" : "What your bank shows in the bills checking account right now", "balance", "Enter balance")}
+    ${step(s2, 2, "Paycheck deposit", s2 ? fmt(state.pay.amount) + " · " + FREQ[state.pay.freq].label.toLowerCase() : "How much goes into this account each payday, and when", "pay", "Add paycheck")}
+    ${step(s3, 3, "Bills", s3 ? state.bills.length + " bills added" : "Rent, car, phone, anything that comes out of this account", "add-bill", "Add a bill")}
+    ${!s1 && !s2 && !s3 ? `<div class="pad" style="border-top:1px solid var(--line)"><button class="btn link" data-a="example">Or try it first with example numbers</button></div>` : ""}
+  </section>`;
+}
+
+function vOverview() {
+  const p = project();
+  const setupDone = state.balanceSet && state.pay && state.bills.length;
+  let html = setupDone ? "" : vSetup();
+  if (!state.balanceSet && !state.bills.length && !state.pay) return html;
+
+  const p0 = p.periods[0];
+  const horizonLabel = p.hasPay ? `through ${shortDate(p.horizonEnd)} (${state.periods} paycheck${state.periods > 1 ? "s" : ""} ahead)` : `over the next 30 days`;
+  const warn = p.shortDate
+    ? `<span class="chip neg">Short ${fmt(-p.min)} by ${shortDate(p.minDate)}</span>`
+    : (p.min - state.cushion < 0 ? `<span class="chip">Dips below your ${fmt(state.cushion)} cushion on ${shortDate(p.minDate)}</span>` : "");
+  const overdue = p.events.filter(e => e.overdue);
+
+  html += `<section class="card hero">
+    <div class="hero-main">
+      <span class="eyebrow">Extra you can put toward debt</span>
+      <div class="big">${fmt(p.safe)}</div>
+      <div class="hero-note">Your account's lowest point ${horizonLabel} is <b class="num">${fmt(p.min)}</b> on ${fmtDate(p.minDate)}. This keeps a ${fmt(state.cushion)} cushion.</div>
+      ${warn}
+      <div class="row-btns" style="margin-top:4px">
+        <button class="btn primary" data-a="extra" ${p.safe <= 0 && !state.debts.length ? "" : ""}>Pay toward a debt</button>
+        <button class="btn" data-a="balance">Update balance</button>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="eyebrow">In the account</span><span class="v">${fmt(state.balance)}</span><span class="s">${state.balanceAt ? "Updated " + relTime(state.balanceAt) : "Not set yet"}</span></div>
+      <div class="stat"><span class="eyebrow">Next paycheck</span><span class="v">${p.nextPay ? fmt(p.nextPay.amount, { plus: true }) : "—"}</span><span class="s">${p.nextPay ? fmtDate(p.nextPay.date) + " · " + relDay(p.nextPay.date) : "Add your pay schedule"}</span></div>
+      <div class="stat"><span class="eyebrow">Due before payday</span><span class="v">${fmt(p0.bills)}</span><span class="s">${p0.billCount} bill${p0.billCount === 1 ? "" : "s"} by ${shortDate(p0.end)}</span></div>
+      <div class="stat"><span class="eyebrow">Left before payday</span><span class="v ${p0.endBal < 0 ? "neg" : ""}">${fmt(p0.endBal)}</span><span class="s">After those bills come out</span></div>
+    </div>
+  </section>`;
+
+  if (overdue.length) html += `<div class="banner"><span>${overdue.length} item${overdue.length > 1 ? "s are" : " is"} past the date and not checked off yet. They're counted as still coming out.</span></div>`;
+
+  // register
+  let rows = "";
+  p.periods.forEach((per, i) => {
+    const title = i === 0 && !(per.events[0] && per.events[0].kind === "pay" && per.start === p.T && !per.events[0].overdue && per.payday)
+      ? `Now → ${shortDate(per.end)}` : `Payday ${shortDate(per.start)} → ${shortDate(per.end)}`;
+    rows += `<tr class="period-row"><td colspan="5"><div class="prow"><span>${title} <span class="muted" style="font-weight:600">· bills ${fmt(per.bills)}</span></span><span><span class="muted" style="font-weight:600;font-size:.75rem">ends at</span> <span class="end ${per.endBal < 0 ? "neg" : ""}">${fmt(per.endBal)}</span></span></div></td></tr>`;
+    if (!per.events.length) rows += `<tr><td colspan="5" class="muted" style="font-size:.85rem">Nothing due in this stretch.</td></tr>`;
+    for (const e of per.events) {
+      const isLow = e.after === p.min && e.date === p.minDate;
+      const sub = e.overdue ? `<div class="item-sub warn">Was due ${shortDate(e.orig)} · not checked off</div>`
+        : e.kind === "bill" ? `<div class="item-sub">${e.bill.autopay ? "Autopay" : "Pay manually"}</div>` : `<div class="item-sub">Deposit</div>`;
+      rows += `<tr class="${isLow ? "low" : ""}">
+        <td class="date">${shortDate(e.orig)}</td>
+        <td><div class="item-name">${esc(e.name)}</div>${sub}</td>
+        <td class="amt num ${e.kind === "pay" ? "pos" : ""}">${e.kind === "pay" ? fmt(e.amount, { plus: true }) : fmt(-e.amount)}<div class="item-sub show-sm ${e.after < 0 ? "neg" : ""}">bal ${fmt(e.after)}</div></td>
+        <td class="bal num hide-sm ${e.after < 0 ? "neg" : ""}">${fmt(e.after)}</td>
+        <td class="act"><button class="check" title="${e.kind === "pay" ? "Paycheck landed" : "Bill came out"}" aria-label="${e.kind === "pay" ? "Mark paycheck received" : "Mark " + esc(e.name) + " paid"}" data-a="ev" data-key="${esc(e.key)}">${ICON_CHECK}</button></td>
+      </tr>`;
+    }
+  });
+  html += `<section class="card">
+    <div class="pad section-head"><h2>Coming up</h2><span class="muted" style="font-size:.82rem">Tap ✓ when money actually moves</span></div>
+    <div class="reg-scroll"><table class="register">
+      <thead><tr><th>Date</th><th>Item</th><th class="r">Amount</th><th class="r hide-sm">Balance</th><th></th></tr></thead>
+      <tbody><tr><td class="date">${shortDate(p.T)}</td><td><div class="item-name">Starting balance</div></td><td class="amt num"><span class="show-sm">${fmt(state.balance)}</span></td><td class="bal num hide-sm">${fmt(state.balance)}</td><td></td></tr>${rows}</tbody>
+    </table></div>
+  </section>`;
+  return html;
+}
+
+function relTime(iso) {
+  const d = new Date(iso), mins = Math.round((Date.now() - d) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + " min ago";
+  if (mins < 60 * 24) return Math.round(mins / 60) + " hr ago";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function billWhen(b) {
+  if (b.freq === "monthly") return "Due the " + ordinal(b.day) + " every month";
+  if (b.freq === "once") return "One time on " + shortDate(b.anchor);
+  return FREQ[b.freq].label + " · next from " + shortDate(b.anchor);
+}
+function nextDue(b) { const d = occ(billRule(b), today(), addDays(today(), 400))[0]; return d; }
+
+function vBills() {
+  const monthlyBills = state.bills.filter(b => b.active !== false).reduce((s, b) => s + b.amount * FREQ[b.freq].per, 0);
+  const monthlyPay = state.pay ? state.pay.amount * FREQ[state.pay.freq].per : 0;
+  const sorted = [...state.bills].sort((a, b) => (nextDue(a) || "9") < (nextDue(b) || "9") ? -1 : 1);
+  let html = `<section class="card">
+    <div class="summary-grid">
+      <div><span class="eyebrow">Bills per month</span><span class="v">${fmt(Math.round(monthlyBills))}</span><span class="item-sub">Averaged across schedules</span></div>
+      <div><span class="eyebrow">Deposits per month</span><span class="v">${state.pay ? fmt(Math.round(monthlyPay)) : "—"}</span><span class="item-sub">${state.pay ? FREQ[state.pay.freq].label : "No paycheck set"}</span></div>
+      <div><span class="eyebrow">Monthly surplus</span><span class="v ${monthlyPay - monthlyBills < 0 ? "neg" : "pos"}">${state.pay ? fmt(Math.round(monthlyPay - monthlyBills)) : "—"}</span><span class="item-sub">What's left over on average</span></div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="pad section-head"><h2>Bills</h2><button class="btn primary small" data-a="add-bill">Add a bill</button></div>`;
+  if (!sorted.length) html += `<div class="empty">No bills yet. Add rent, car payment, utilities, phone, subscriptions, anything that comes out of this account.</div>`;
+  else html += `<div class="list" style="border-top:1px solid var(--line)">${sorted.map(b => {
+    const nd = nextDue(b);
+    return `<div class="li">
+      <div class="grow"><div class="item-name">${esc(b.name)} ${b.autopay ? '<span class="tag accent">Autopay</span>' : ""}</div>
+      <div class="item-sub">${billWhen(b)}${nd ? " · next " + fmtDate(nd) : ""}</div></div>
+      <div class="amt num">${fmt(b.amount)}</div>
+      <button class="btn small" data-a="edit-bill" data-id="${b.id}">Edit</button>
+    </div>`;
+  }).join("")}</div>`;
+  return html + `</section>`;
+}
+
+function vDebts() {
+  const total = state.debts.reduce((s, d) => s + Math.max(0, d.balance), 0);
+  const top = [...state.debts].filter(d => d.balance > 0 && d.apr).sort((a, b) => b.apr - a.apr)[0];
+  const p = project();
+  const paidExtra = state.log.filter(l => l.type === "extra").reduce((s, l) => s - l.amount, 0);
+  let html = `<section class="card"><div class="summary-grid">
+      <div><span class="eyebrow">Total owed</span><span class="v">${fmt(total)}</span><span class="item-sub">${state.debts.length} account${state.debts.length === 1 ? "" : "s"}</span></div>
+      <div><span class="eyebrow">Extra available now</span><span class="v pos">${fmt(p.safe)}</span><span class="item-sub">From the Overview math</span></div>
+      <div><span class="eyebrow">Extra paid so far</span><span class="v">${fmt(paidExtra)}</span><span class="item-sub">Logged in this app</span></div>
+    </div></section>
+    <section class="card"><div class="pad section-head"><h2>Credit cards &amp; loans</h2><div class="row-btns"><button class="btn small" data-a="add-debt">Add a debt</button><button class="btn primary small" data-a="extra">Make a payment</button></div></div>`;
+  if (!state.debts.length) html += `<div class="empty">Add your credit cards and loans to track the balances as you pay them down.<br>The interest rate (APR) is on your statement and tells you which card to pay first.</div>`;
+  else html += `<div class="list" style="border-top:1px solid var(--line)">${[...state.debts].sort((a, b) => (b.apr || 0) - (a.apr || 0)).map(d => `
+    <div class="li">
+      <div class="grow"><div class="item-name">${esc(d.name)} ${top && top.id === d.id ? '<span class="tag accent">Pay extra here first</span>' : ""} ${d.balance <= 0 ? '<span class="tag accent">Paid off</span>' : ""}</div>
+      <div class="item-sub">${d.apr ? d.apr + "% APR" : "APR not set"}${d.min ? " · " + fmt(d.min) + " minimum" : ""}</div></div>
+      <div class="amt num">${fmt(Math.max(0, d.balance))}</div>
+      <button class="btn small" data-a="edit-debt" data-id="${d.id}">Edit</button>
+    </div>`).join("")}</div>
+    ${top ? `<div class="pad muted" style="border-top:1px solid var(--line);font-size:.85rem">Paying extra toward the highest interest rate first saves the most money. Keep paying at least the minimum on the others.</div>` : ""}`;
+  return html + `</section>`;
+}
+
+function vActivity() {
+  let html = `<section class="card"><div class="pad section-head"><h2>Activity</h2><button class="btn small" data-a="txn">Add a transaction</button></div>`;
+  if (!state.log.length) return html + `<div class="empty">Every time you check off a bill, log a paycheck, update the balance, or pay a debt, it shows up here. You can undo any of it.</div></section>`;
+  const TYPE = { bill: "Bill", pay: "Paycheck", extra: "Debt payment", adjust: "Balance update", txn: "Transaction" };
+  html += `<div class="list" style="border-top:1px solid var(--line)">${state.log.map(l => `
+    <div class="li">
+      <div class="grow"><div class="item-name">${esc(l.label)} <span class="tag">${TYPE[l.type] || l.type}</span></div>
+      <div class="item-sub">${new Date(l.t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${l.note ? " · " + esc(l.note) : ""}</div></div>
+      <div class="amt num ${l.amount > 0 ? "pos" : ""}">${l.amount ? fmt(l.amount, { plus: true }) : "—"}</div>
+      <button class="btn small" data-a="undo" data-id="${l.id}">Undo</button>
+    </div>`).join("")}</div>`;
+  return html + `</section>`;
+}
+
+function vPaycheck() {
+  const p = state.pay;
+  const rule = payRule();
+  const next = rule ? occ(rule, today(), addDays(today(), 120)).slice(0, 4) : [];
+  return `<section class="card">
+    <div class="pad section-head"><h2>Paycheck</h2><button class="btn small ${p ? "" : "primary"}" data-a="pay">${p ? "Edit" : "Add paycheck"}</button></div>
+    ${p ? `<div class="list" style="border-top:1px solid var(--line)">
+      <div class="li"><div class="grow"><div class="item-name">Deposit into bills account</div><div class="item-sub">${FREQ[p.freq].label}${p.freq === "semimonthly" ? " · the " + ordinal(p.day1) + " and " + ordinal(p.day2) : ""}</div></div><div class="amt num pos">${fmt(p.amount, { plus: true })}</div></div>
+      <div class="li"><div class="grow"><div class="item-name">Next paydays</div><div class="item-sub">${next.map(d => fmtDate(d)).join(" · ") || "—"}</div></div></div>
+    </div>` : `<div class="empty">Add how much of each paycheck goes into this account and when it lands.</div>`}
+  </section>
+  <section class="card">
+    <div class="pad section-head"><h2>How the math works</h2><button class="btn small" data-a="prefs">Change</button></div>
+    <div class="list" style="border-top:1px solid var(--line)">
+      <div class="li"><div class="grow"><div class="item-name">Cushion</div><div class="item-sub">Always keep at least this much in the account</div></div><div class="amt num">${fmt(state.cushion)}</div></div>
+      <div class="li"><div class="grow"><div class="item-name">Look ahead</div><div class="item-sub">How many paychecks ahead to check before calling money "extra"</div></div><div class="amt num">${state.periods} paycheck${state.periods > 1 ? "s" : ""}</div></div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="pad section-head"><h2>Your data</h2></div>
+    <div class="pad row-btns" style="border-top:1px solid var(--line)">
+      <button class="btn small" data-a="export">Back up / restore</button>
+      <button class="btn small danger" data-a="reset">Erase everything</button>
+    </div>
+  </section>`;
+}
+
+/* ---------- dialogs ---------- */
+const dlg = $("#dlg");
+function openDlg(html, onSubmit, onReady) {
+  $("#dlg-body").innerHTML = `<form class="dlg" id="dlg-form" novalidate>${html}</form>`;
+  const form = $("#dlg-form");
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    const submitter = e.submitter;
+    const err = onSubmit(form, submitter ? submitter.value : "");
+    if (typeof err === "string") { const el = form.querySelector(".err") || form.insertAdjacentElement("beforeend", Object.assign(document.createElement("div"), { className: "err" })); el.textContent = err; return; }
+    dlg.close();
+  });
+  form.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => dlg.close()));
+  if (onReady) onReady(form);
+  dlg.showModal();
+  const first = form.querySelector("input:not([type=checkbox]),select");
+  if (first && !matchMedia("(pointer:coarse)").matches) first.focus();
+}
+const moneyField = (id, label, val, hint) => `<div class="field"><label for="${id}">${label}</label><input id="${id}" name="${id}" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${moneyIn(val)}">${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
+const cancelBtn = `<button type="button" class="btn" data-close>Cancel</button>`;
+
+function dlgBalance() {
+  openDlg(`<h3>Update balance</h3>
+    ${moneyField("bal", "What your bank shows in the bills account right now", state.balanceSet ? state.balance : null)}
+    <p class="hint muted" style="margin:0;font-size:.8rem">If a bill already came out, check it off on the Overview with "already in my balance" so it isn't counted twice.</p>
+    <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="save">Save balance</button></div>`,
+    f => {
+      const v = parseMoney(f.bal.value);
+      if (v == null || isNaN(v)) return "Enter the balance, like 1250.00";
+      const delta = v - state.balance;
+      const first = !state.balanceSet;
+      state.balance = v; state.balanceSet = true; state.balanceAt = new Date().toISOString();
+      logEntry({ type: "adjust", label: first ? "Starting balance" : "Balance updated from bank", amount: delta, note: "Now " + fmt(v) });
+      commit("Balance saved", state.log[0].id);
+    });
+}
+
+function dlgTxn() {
+  openDlg(`<h3>Add a transaction</h3>
+    <div class="field"><label for="tl">What was it?</label><input id="tl" name="tl" placeholder="Transfer from savings" maxlength="60"></div>
+    ${moneyField("ta", "Amount", null)}
+    <div class="dlg-actions">${cancelBtn}<button class="btn" value="out">Money out</button><button class="btn primary" value="in">Money in</button></div>`,
+    (f, which) => {
+      const a = parseMoney(f.ta.value);
+      if (!a || isNaN(a) || a <= 0) return "Enter an amount above zero";
+      const signed = which === "out" ? -a : a;
+      state.balance += signed; state.balanceAt = new Date().toISOString();
+      logEntry({ type: "txn", label: f.tl.value.trim() || (signed > 0 ? "Deposit" : "Withdrawal"), amount: signed });
+      commit(`${fmt(signed, { plus: true })} recorded`, state.log[0].id);
+    });
+}
+
+function dlgEvent(key) {
+  const ev = project().events.find(e => e.key === key);
+  if (!ev) return;
+  if (ev.kind === "bill") {
+    openDlg(`<h3>${esc(ev.name)}</h3>
+      <p class="muted" style="margin:0">Due ${fmtDate(ev.orig)}</p>
+      ${moneyField("amt", "Amount that came out", ev.amount, "Change it if this bill was different this time.")}
+      <div class="choice">
+        <button class="btn primary" value="deduct">It came out. Subtract it from my balance.</button>
+        <button class="btn" value="mark">My balance already shows it. Just check it off.</button>
+        ${cancelBtn}
+      </div>`,
+      (f, which) => {
+        const a = parseMoney(f.amt.value);
+        if (a == null || isNaN(a) || a < 0) return "Enter the amount";
+        markBill(ev, a, which === "deduct");
+      });
+  } else {
+    openDlg(`<h3>Paycheck</h3>
+      <p class="muted" style="margin:0">Expected ${fmtDate(ev.orig)}</p>
+      ${moneyField("amt", "Amount that landed in the bills account", ev.amount)}
+      <div class="choice">
+        <button class="btn primary" value="add">It landed. Add it to my balance.</button>
+        <button class="btn" value="mark">My balance already shows it. Just check it off.</button>
+        ${cancelBtn}
+      </div>`,
+      (f, which) => {
+        const a = parseMoney(f.amt.value);
+        if (a == null || isNaN(a) || a < 0) return "Enter the amount";
+        markPay(ev, a, which === "add");
+      });
+  }
+}
+
+function dlgPay() {
+  const p = state.pay || { amount: null, freq: "biweekly", anchor: today(), day1: 1, day2: 15 };
+  const opts = ["weekly", "biweekly", "semimonthly", "monthly"].map(k => `<option value="${k}" ${p.freq === k ? "selected" : ""}>${FREQ[k].label}</option>`).join("");
+  let nextAnchor = p.anchor;
+  if (state.pay) { const r = payRule(); nextAnchor = occ(r, today(), addDays(today(), 60))[0] || p.anchor; }
+  openDlg(`<h3>Paycheck deposit</h3>
+    ${moneyField("pa", "How much goes into the bills account each payday", p.amount)}
+    <div class="field"><label for="pf">How often</label><select id="pf" name="pf">${opts}</select></div>
+    <div class="field" id="anchor-f"><label for="pd">Next payday</label><input type="date" id="pd" name="pd" value="${nextAnchor}"></div>
+    <div class="two" id="semi-f"><div class="field"><label for="d1">First payday each month</label><input id="d1" name="d1" inputmode="numeric" value="${p.day1 || 1}"></div><div class="field"><label for="d2">Second payday</label><input id="d2" name="d2" inputmode="numeric" value="${p.day2 || 15}"></div></div>
+    <div class="dlg-actions">${state.pay ? `<button type="button" class="btn danger" id="pay-del">Remove</button>` : ""}${cancelBtn}<button class="btn primary" value="save">Save</button></div>`,
+    f => {
+      const a = parseMoney(f.pa.value);
+      if (!a || isNaN(a) || a <= 0) return "Enter the deposit amount";
+      const freq = f.pf.value;
+      const d1 = parseInt(f.d1.value, 10), d2 = parseInt(f.d2.value, 10);
+      if (freq === "semimonthly" && (!(d1 >= 1 && d1 <= 31) || !(d2 >= 1 && d2 <= 31) || d1 === d2)) return "Enter two different days between 1 and 31";
+      if (freq !== "semimonthly" && !f.pd.value) return "Pick your next payday";
+      const changed = !state.pay || state.pay.freq !== freq || (freq === "semimonthly" ? (state.pay.day1 !== d1 || state.pay.day2 !== d2) : f.pd.value !== nextAnchor);
+      state.pay = { amount: a, freq, anchor: freq === "semimonthly" ? today() : f.pd.value, day1: d1 || 1, day2: d2 || 15,
+        since: changed ? today() : (state.pay.since || today()) };
+      commit("Paycheck saved");
+    },
+    f => {
+      const sync = () => { const semi = f.pf.value === "semimonthly"; $("#semi-f").hidden = !semi; $("#anchor-f").hidden = semi; };
+      f.pf.addEventListener("change", sync); sync();
+      const del = $("#pay-del"); if (del) del.addEventListener("click", () => { state.pay = null; dlg.close(); commit("Paycheck removed"); });
+    });
+}
+
+function dlgBill(id) {
+  const b = state.bills.find(x => x.id === id) || { name: "", amount: null, freq: "monthly", day: null, anchor: today(), autopay: true };
+  const opts = ["monthly", "weekly", "biweekly", "quarterly", "yearly", "once"].map(k => `<option value="${k}" ${b.freq === k ? "selected" : ""}>${FREQ[k].label}</option>`).join("");
+  openDlg(`<h3>${id ? "Edit bill" : "Add a bill"}</h3>
+    <div class="field"><label for="bn">Name</label><input id="bn" name="bn" maxlength="40" placeholder="Car insurance" value="${esc(b.name)}"></div>
+    <div class="two">${moneyField("ba", "Amount", b.amount)}<div class="field"><label for="bf">How often</label><select id="bf" name="bf">${opts}</select></div></div>
+    <div class="field" id="bd-f"><label for="bd">Day of the month it's due</label><input id="bd" name="bd" inputmode="numeric" placeholder="15" value="${b.day || ""}"><span class="hint">Use 31 for "last day of the month".</span></div>
+    <div class="field" id="bx-f"><label for="bx">Next due date</label><input type="date" id="bx" name="bx" value="${b.anchor || today()}"></div>
+    <label class="inline-check"><input type="checkbox" id="bp" name="bp" ${b.autopay ? "checked" : ""}> Comes out automatically (autopay)</label>
+    <div class="dlg-actions">${id ? `<button type="button" class="btn danger" id="bill-del">Delete</button>` : ""}${cancelBtn}<button class="btn primary" value="save">${id ? "Save" : "Add bill"}</button></div>`,
+    f => {
+      const name = f.bn.value.trim(); if (!name) return "Give the bill a name";
+      const a = parseMoney(f.ba.value); if (!a || isNaN(a) || a <= 0) return "Enter the amount";
+      const freq = f.bf.value; const day = parseInt(f.bd.value, 10);
+      if (freq === "monthly" && !(day >= 1 && day <= 31)) return "Enter the due day, 1 to 31";
+      if (freq !== "monthly" && !f.bx.value) return "Pick the next due date";
+      const T = today();
+      const data = { name, amount: a, freq, day: freq === "monthly" ? day : null, anchor: freq === "monthly" ? T : f.bx.value, autopay: f.bp.checked, active: true };
+      if (id) {
+        const cur = state.bills.find(x => x.id === id);
+        const schedChanged = cur.freq !== freq || cur.day !== data.day || (freq !== "monthly" && cur.anchor !== data.anchor);
+        Object.assign(cur, data, schedChanged ? { since: freq === "monthly" ? T : minD(T, data.anchor) } : {});
+        commit(`${name} saved`);
+      } else {
+        state.bills.push(Object.assign({ id: uid(), since: freq === "monthly" ? T : minD(T, data.anchor) }, data));
+        commit(`${name} added`);
+      }
+    },
+    f => {
+      const sync = () => { const m = f.bf.value === "monthly"; $("#bd-f").hidden = !m; $("#bx-f").hidden = m; };
+      f.bf.addEventListener("change", sync); sync();
+      const del = $("#bill-del"); if (del) del.addEventListener("click", () => { state.bills = state.bills.filter(x => x.id !== id); dlg.close(); commit("Bill deleted"); });
+    });
+}
+const minD = (a, b) => a < b ? a : b;
+
+function dlgDebt(id) {
+  const d = state.debts.find(x => x.id === id) || { name: "", balance: null, apr: "", min: null };
+  openDlg(`<h3>${id ? "Edit debt" : "Add a debt"}</h3>
+    <div class="field"><label for="dn">Name</label><input id="dn" name="dn" maxlength="40" placeholder="Visa" value="${esc(d.name)}"></div>
+    ${moneyField("db", "Current balance owed", d.balance)}
+    <div class="two"><div class="field"><label for="dr">Interest rate (APR %)</label><input id="dr" name="dr" inputmode="decimal" placeholder="24.99" value="${d.apr || ""}"></div>${moneyField("dm", "Minimum payment", d.min)}</div>
+    <p class="muted" style="margin:0;font-size:.8rem">If the minimum payment comes out of the bills account, add it on the Bills tab too so it's counted.</p>
+    <div class="dlg-actions">${id ? `<button type="button" class="btn danger" id="debt-del">Delete</button>` : ""}${cancelBtn}<button class="btn primary" value="save">${id ? "Save" : "Add debt"}</button></div>`,
+    f => {
+      const name = f.dn.value.trim(); if (!name) return "Give it a name";
+      const bal = parseMoney(f.db.value); if (bal == null || isNaN(bal)) return "Enter the balance owed";
+      const apr = f.dr.value.trim() ? Number(f.dr.value.replace("%", "")) : null;
+      if (apr != null && !Number.isFinite(apr)) return "APR should be a number like 24.99";
+      const mn = parseMoney(f.dm.value);
+      const data = { name, balance: bal, apr, min: isNaN(mn) ? null : mn };
+      if (id) Object.assign(state.debts.find(x => x.id === id), data); else state.debts.push(Object.assign({ id: uid() }, data));
+      commit(`${name} saved`);
+    },
+    () => { const del = $("#debt-del"); if (del) del.addEventListener("click", () => { state.debts = state.debts.filter(x => x.id !== id); dlg.close(); commit("Debt deleted"); }); });
+}
+
+function dlgExtra() {
+  const p = project();
+  const sorted = [...state.debts].filter(d => d.balance > 0).sort((a, b) => (b.apr || 0) - (a.apr || 0));
+  const opts = sorted.map(d => `<option value="${d.id}">${esc(d.name)} · ${fmt(d.balance)} owed${d.apr ? " · " + d.apr + "%" : ""}</option>`).join("") + `<option value="">Something else</option>`;
+  openDlg(`<h3>Pay toward a debt</h3>
+    <div class="field"><label for="xd">Pay to</label><select id="xd" name="xd">${opts}</select>${!sorted.length ? `<span class="hint">Add your cards on the Debts tab to track their balances.</span>` : ""}</div>
+    <div class="field" id="xl-f"><label for="xl">What is it?</label><input id="xl" name="xl" maxlength="40" placeholder="Savings, car loan…"></div>
+    ${moneyField("xa", "Amount", p.safe || null, `You can safely send up to <b class="num">${fmt(p.safe)}</b> right now.`)}
+    <div class="preview" id="xp"></div>
+    <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="pay">Record payment</button></div>`,
+    f => {
+      const a = parseMoney(f.xa.value); if (!a || isNaN(a) || a <= 0) return "Enter an amount above zero";
+      const debt = state.debts.find(d => d.id === f.xd.value);
+      const label = debt ? debt.name : (f.xl.value.trim() || "Extra payment");
+      state.balance -= a; state.balanceAt = new Date().toISOString();
+      if (debt) debt.balance -= a;
+      logEntry({ type: "extra", label, amount: -a, debtId: debt ? debt.id : null, note: debt ? fmt(Math.max(0, debt.balance)) + " left on it" : "" });
+      commit(`${fmt(a)} sent to ${label}`, state.log[0].id);
+    },
+    f => {
+      const upd = () => {
+        $("#xl-f").hidden = !!f.xd.value;
+        const a = parseMoney(f.xa.value) || 0;
+        const low = p.min - a;
+        $("#xp").innerHTML = a > 0 ? `After this, your lowest point will be <b class="num ${low < 0 ? "neg" : ""}">${fmt(low)}</b> on ${shortDate(p.minDate)}${low < state.cushion ? (low < 0 ? ". That's an overdraft." : ", under your cushion.") : "."}` : "Enter an amount to see how it affects the account.";
+      };
+      f.xa.addEventListener("input", upd); f.xd.addEventListener("change", upd); upd();
+    });
+}
+
+function dlgPrefs() {
+  openDlg(`<h3>How the math works</h3>
+    ${moneyField("pc", "Cushion to always keep", state.cushion, "A buffer for surprises, like a bill that runs higher than usual.")}
+    <div class="field"><label for="pn">Look ahead</label><select id="pn" name="pn">${[1, 2, 3, 4].map(n => `<option value="${n}" ${state.periods === n ? "selected" : ""}>${n} paycheck${n > 1 ? "s" : ""}</option>`).join("")}</select><span class="hint">Two is a safe default: it makes sure money you send today won't leave you short before the paycheck after next.</span></div>
+    <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="save">Save</button></div>`,
+    f => {
+      const c = parseMoney(f.pc.value); if (c == null || isNaN(c) || c < 0) return "Enter a cushion amount (0 is fine)";
+      state.cushion = c; state.periods = parseInt(f.pn.value, 10) || 2;
+      commit("Saved");
+    });
+}
+
+function dlgExport() {
+  const json = JSON.stringify(state);
+  openDlg(`<h3>Back up / restore</h3>
+    <div class="field"><label for="bk">Your data</label><textarea id="bk" name="bk" spellcheck="false">${esc(json)}</textarea><span class="hint">Copy this somewhere safe. To restore, paste a backup here and choose Restore.</span></div>
+    <div class="dlg-actions">${cancelBtn}<button type="button" class="btn" id="bk-copy">Copy</button><button class="btn primary" value="restore">Restore from pasted</button></div>`,
+    f => {
+      try {
+        const d = JSON.parse(f.bk.value);
+        if (!d || typeof d !== "object" || !Array.isArray(d.bills)) return "That doesn't look like a backup from this app";
+        state = normalize(d); commit("Restored from backup");
+      } catch (e) { return "That text isn't a valid backup"; }
+    },
+    f => {
+      $("#bk-copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(json); toast("Copied"); } catch (e) { f.bk.focus(); f.bk.select(); toast("Selected – copy it with your keyboard or long-press"); }
+      });
+    });
+}
+
+function dlgReset() {
+  openDlg(`<h3>Erase everything?</h3><p style="margin:0">This deletes your balance, paycheck, bills, debts and activity on every device. It can't be undone.</p>
+    <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="erase" style="background:var(--neg);border-color:var(--neg)">Erase everything</button></div>`,
+    () => { state = blank(); commit("Everything erased"); location.hash = "overview"; });
+}
+
+/* ---------- toast ---------- */
+let toastTimer = null;
+function toast(msg, undoId) {
+  const t = $("#toast");
+  t.innerHTML = `<span>${esc(msg)}</span>${undoId ? `<button data-a="undo" data-id="${undoId}">Undo</button>` : ""}`;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 5000);
+}
+
+/* ---------- events ---------- */
+document.addEventListener("click", e => {
+  const el = e.target.closest("[data-a]");
+  if (!el || !state) return;
+  const a = el.dataset.a, id = el.dataset.id;
+  if (a === "undo") { $("#toast").hidden = true; undo(id); }
+  else if (a === "balance") dlgBalance();
+  else if (a === "pay") dlgPay();
+  else if (a === "add-bill") dlgBill(null);
+  else if (a === "edit-bill") dlgBill(id);
+  else if (a === "add-debt") dlgDebt(null);
+  else if (a === "edit-debt") dlgDebt(id);
+  else if (a === "extra") dlgExtra();
+  else if (a === "txn") dlgTxn();
+  else if (a === "ev") dlgEvent(el.dataset.key);
+  else if (a === "prefs") dlgPrefs();
+  else if (a === "export") dlgExport();
+  else if (a === "reset") dlgReset();
+  else if (a === "example") loadExample();
+  else if (a === "clear-example") { state = blank(); commit("Examples cleared. Start with step 1."); }
+});
+window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); });
+dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+// keep "today" fresh if the page stays open past midnight
+setInterval(() => { if (state && !dlg.open) render(); }, 5 * 60 * 1000);
+
+init();
+})();
+</script>
+
+</body>
+</html>
