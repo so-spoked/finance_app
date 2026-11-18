@@ -274,11 +274,18 @@ function occ(rule, from, to) {
 
 /* ---------- state ---------- */
 const blank = () => ({ v: 1, balance: 0, balanceSet: false, balanceAt: null, cushion: 10000, periods: 2,
-  pay: null, bills: [], paid: [], received: [], debts: [], log: [], example: false });
+  pays: [], bills: [], paid: [], received: [], debts: [], log: [], example: false });
 let state = null;
 function normalize(d) {
   const s = Object.assign(blank(), d || {});
-  for (const k of ["bills", "paid", "received", "debts", "log"]) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ["bills", "paid", "received", "debts", "log", "pays"]) if (!Array.isArray(s[k])) s[k] = [];
+  // older saves had a single paycheck
+  if (s.pay && !s.pays.length) {
+    const id = uid();
+    s.pays.push(Object.assign({ id, name: "Paycheck" }, s.pay));
+    s.received = s.received.map(k => k.includes("|") ? k : id + "|" + k);
+  }
+  delete s.pay;
   return s;
 }
 
@@ -353,8 +360,7 @@ async function init() {
 }
 
 /* ---------- projection ---------- */
-function payRule() {
-  const p = state.pay;
+function payRule(p) {
   if (!p || !p.anchor || !p.freq) return null;
   const r = { freq: p.freq, anchor: p.anchor, day: parseD(p.anchor).getDate() };
   if (p.freq === "semimonthly") { r.day = p.day1 || 1; r.day2 = p.day2 || 15; }
@@ -364,24 +370,28 @@ function billRule(b) { return { freq: b.freq, anchor: b.anchor || b.since, day: 
 
 function project() {
   const T = today();
-  const rule = payRule();
   const N = Math.max(1, state.periods || 2);
   const paid = new Set(state.paid), recv = new Set(state.received);
-  let pays = [], horizonEnd;
-  if (rule) {
-    pays = occ(rule, addDays(T, 1), addDays(T, 40 * (N + 2))).filter(d => !recv.has(d)).slice(0, N + 1);
-    // if today itself is a payday that hasn't landed yet, treat it as the first boundary
-    if (occ(rule, T, T).length && !recv.has(T)) pays = [T, ...pays].slice(0, N + 1);
-    horizonEnd = pays.length > N ? addDays(pays[N], -1) : addDays(T, 30 * N);
-  } else {
-    horizonEnd = addDays(T, 30);
+  const incomes = state.pays.filter(p => payRule(p) && p.amount > 0);
+  // look ahead N paychecks for each person; the horizon ends where the last of those cycles ends
+  let horizonEnd = addDays(T, 30);
+  if (incomes.length) {
+    horizonEnd = T;
+    for (const inc of incomes) {
+      const up = occ(payRule(inc), T, addDays(T, 40 * (N + 2))).filter(d => !recv.has(inc.id + "|" + d)).slice(0, N + 1);
+      const end = up.length > N ? addDays(up[N], -1) : addDays(T, 30 * N);
+      if (end > horizonEnd) horizonEnd = end;
+    }
   }
   const events = [];
-  if (rule) {
-    const since = state.pay.since || T;
-    for (const d of occ(rule, maxD(since, addDays(T, -31)), horizonEnd)) {
-      if (recv.has(d)) continue;
-      events.push({ kind: "pay", key: d, orig: d, date: d < T ? T : d, overdue: d < T, amount: state.pay.amount || 0, name: "Paycheck" });
+  const bounds = new Set();
+  for (const inc of incomes) {
+    const since = inc.since || T;
+    for (const d of occ(payRule(inc), maxD(since, addDays(T, -31)), horizonEnd)) {
+      const key = inc.id + "|" + d;
+      if (recv.has(key)) continue;
+      if (d > T) bounds.add(d);
+      events.push({ kind: "pay", key, orig: d, date: d < T ? T : d, overdue: d < T, amount: inc.amount, name: inc.name || "Paycheck" });
     }
   }
   for (const b of state.bills) {
@@ -403,13 +413,13 @@ function project() {
     if (run < 0 && !shortDate) shortDate = e.date;
   }
   // periods
-  const bounds = [T, ...pays.filter(p => p > T)];
+  const bl = [T, ...[...bounds].sort()];
   const periods = [];
-  for (let i = 0; i < bounds.length && periods.length <= N; i++) {
-    const start = bounds[i];
-    const end = i + 1 < bounds.length ? addDays(bounds[i + 1], -1) : horizonEnd;
+  for (let i = 0; i < bl.length; i++) {
+    const start = bl[i];
     if (start > horizonEnd) break;
-    periods.push({ start, end, events: [], payday: i > 0 || (pays[0] === T) });
+    const end = i + 1 < bl.length ? addDays(bl[i + 1], -1) : horizonEnd;
+    periods.push({ start, end, events: [] });
   }
   if (!periods.length) periods.push({ start: T, end: horizonEnd, events: [] });
   let carry = state.balance;
@@ -423,8 +433,13 @@ function project() {
     carry = p.endBal;
   }
   const safe = Math.max(0, min - (state.cushion || 0));
-  const nextPay = events.find(e => e.kind === "pay" && !e.overdue) || (pays[0] ? { date: pays[0], amount: state.pay.amount } : null);
-  return { T, events, periods, min, minDate, shortDate, safe, horizonEnd, nextPay, hasPay: !!rule };
+  const fut = events.filter(e => e.kind === "pay" && !e.overdue);
+  let nextPay = null;
+  if (fut.length) {
+    const same = fut.filter(e => e.date === fut[0].date);
+    nextPay = { date: fut[0].date, amount: same.reduce((s, e) => s + e.amount, 0), name: same.length > 1 ? same.length + " paychecks" : same[0].name };
+  }
+  return { T, events, periods, min, minDate, shortDate, safe, horizonEnd, nextPay, hasPay: incomes.length > 0 };
 }
 
 /* ---------- mutations ---------- */
@@ -435,7 +450,7 @@ function logEntry(e) {
 function prune() {
   const cutoff = addDays(today(), -150);
   state.paid = state.paid.filter(k => (k.split("|")[1] || "") >= cutoff);
-  state.received = state.received.filter(d => d >= cutoff);
+  state.received = state.received.filter(k => (k.split("|")[1] || k) >= cutoff);
 }
 function commit(msg, undoId) { prune(); save(); render(); if (msg) toast(msg, undoId); }
 
@@ -448,8 +463,8 @@ function markBill(ev, amount, deduct) {
 function markPay(ev, amount, add) {
   state.received.push(ev.key);
   if (add) state.balance += amount;
-  logEntry({ type: "pay", label: "Paycheck", amount: add ? amount : 0, note: add ? "Deposit landed" : "Marked received (already in balance)", rkey: ev.key, due: ev.orig });
-  commit(add ? `Paycheck added · ${fmt(amount, { plus: true })}` : "Paycheck marked received", state.log[0].id);
+  logEntry({ type: "pay", label: ev.name, amount: add ? amount : 0, note: add ? "Deposit landed" : "Marked received (already in balance)", rkey: ev.key, due: ev.orig });
+  commit(add ? `${ev.name} added · ${fmt(amount, { plus: true })}` : `${ev.name} marked received`, state.log[0].id);
 }
 function undo(id) {
   const i = state.log.findIndex(l => l.id === id);
@@ -469,7 +484,10 @@ function loadExample() {
   const fri = addDays(T, ((5 - parseD(T).getDay() + 7) % 7) || 7);
   state = normalize({
     example: true, balance: 124000, balanceSet: true, balanceAt: new Date().toISOString(), cushion: 10000, periods: 2,
-    pay: { amount: 115000, freq: "biweekly", anchor: fri, day1: 1, day2: 15, since: T },
+    pays: [
+      { id: uid(), name: "My paycheck", amount: 62000, freq: "biweekly", anchor: fri, day1: 1, day2: 15, since: T },
+      { id: uid(), name: "Second paycheck", amount: 52000, freq: "biweekly", anchor: addDays(fri, 7), day1: 1, day2: 15, since: T }
+    ],
     bills: [
       ["Rent", 110000, 1], ["Internet", 7000, 8], ["Car payment", 38500, 12], ["Car insurance", 16800, 15],
       ["Electric", 14000, 20], ["Phone", 8500, 25], ["Streaming", 2300, 28]
@@ -499,12 +517,12 @@ function render() {
 }
 
 function vSetup() {
-  const s1 = state.balanceSet, s2 = !!state.pay, s3 = state.bills.length > 0;
+  const s1 = state.balanceSet, s2 = state.pays.length > 0, s3 = state.bills.length > 0;
   const step = (done, n, title, sub, action, label) => `<div class="step ${done ? "done" : ""}"><span class="n">${done ? "✓" : n}</span><div class="grow"><div class="item-name">${title}</div><div class="item-sub">${sub}</div></div><button class="btn small ${done ? "" : "primary"}" data-a="${action}">${done ? "Edit" : label}</button></div>`;
   return `<section class="card setup">
     <div class="pad"><h2>Set up your bills account</h2><p class="muted" style="margin:4px 0 0">Three things and you'll see how much extra you can throw at your cards.</p></div>
     ${step(s1, 1, "Current balance", s1 ? fmt(state.balance) + " in the account" : "What your bank shows in the bills checking account right now", "balance", "Enter balance")}
-    ${step(s2, 2, "Paycheck deposit", s2 ? fmt(state.pay.amount) + " · " + FREQ[state.pay.freq].label.toLowerCase() : "How much goes into this account each payday, and when", "pay", "Add paycheck")}
+    ${step(s2, 2, "Paychecks", s2 ? state.pays.map(x => esc(x.name) + " " + fmt(x.amount)).join(" · ") : "How much of each paycheck goes into this account, and when. Add one for each of you.", s2 ? "goto-paycheck" : "pay", "Add paycheck")}
     ${step(s3, 3, "Bills", s3 ? state.bills.length + " bills added" : "Rent, car, phone, anything that comes out of this account", "add-bill", "Add a bill")}
     ${!s1 && !s2 && !s3 ? `<div class="pad" style="border-top:1px solid var(--line)"><button class="btn link" data-a="example">Or try it first with example numbers</button></div>` : ""}
   </section>`;
@@ -512,12 +530,12 @@ function vSetup() {
 
 function vOverview() {
   const p = project();
-  const setupDone = state.balanceSet && state.pay && state.bills.length;
+  const setupDone = state.balanceSet && state.pays.length && state.bills.length;
   let html = setupDone ? "" : vSetup();
-  if (!state.balanceSet && !state.bills.length && !state.pay) return html;
+  if (!state.balanceSet && !state.bills.length && !state.pays.length) return html;
 
   const p0 = p.periods[0];
-  const horizonLabel = p.hasPay ? `through ${shortDate(p.horizonEnd)} (${state.periods} paycheck${state.periods > 1 ? "s" : ""} ahead)` : `over the next 30 days`;
+  const horizonLabel = p.hasPay ? `through ${shortDate(p.horizonEnd)} (${state.periods} pay cycle${state.periods > 1 ? "s" : ""} ahead)` : `over the next 30 days`;
   const warn = p.shortDate
     ? `<span class="chip neg">Short ${fmt(-p.min)} by ${shortDate(p.minDate)}</span>`
     : (p.min - state.cushion < 0 ? `<span class="chip">Dips below your ${fmt(state.cushion)} cushion on ${shortDate(p.minDate)}</span>` : "");
@@ -536,7 +554,7 @@ function vOverview() {
     </div>
     <div class="stats">
       <div class="stat"><span class="eyebrow">In the account</span><span class="v">${fmt(state.balance)}</span><span class="s">${state.balanceAt ? "Updated " + relTime(state.balanceAt) : "Not set yet"}</span></div>
-      <div class="stat"><span class="eyebrow">Next paycheck</span><span class="v">${p.nextPay ? fmt(p.nextPay.amount, { plus: true }) : "—"}</span><span class="s">${p.nextPay ? fmtDate(p.nextPay.date) + " · " + relDay(p.nextPay.date) : "Add your pay schedule"}</span></div>
+      <div class="stat"><span class="eyebrow">Next paycheck</span><span class="v">${p.nextPay ? fmt(p.nextPay.amount, { plus: true }) : "—"}</span><span class="s">${p.nextPay ? esc(p.nextPay.name) + " · " + shortDate(p.nextPay.date) + " (" + relDay(p.nextPay.date) + ")" : "Add your pay schedule"}</span></div>
       <div class="stat"><span class="eyebrow">Due before payday</span><span class="v">${fmt(p0.bills)}</span><span class="s">${p0.billCount} bill${p0.billCount === 1 ? "" : "s"} by ${shortDate(p0.end)}</span></div>
       <div class="stat"><span class="eyebrow">Left before payday</span><span class="v ${p0.endBal < 0 ? "neg" : ""}">${fmt(p0.endBal)}</span><span class="s">After those bills come out</span></div>
     </div>
@@ -547,8 +565,9 @@ function vOverview() {
   // register
   let rows = "";
   p.periods.forEach((per, i) => {
-    const title = i === 0 && !(per.events[0] && per.events[0].kind === "pay" && per.start === p.T && !per.events[0].overdue && per.payday)
-      ? `Now → ${shortDate(per.end)}` : `Payday ${shortDate(per.start)} → ${shortDate(per.end)}`;
+    const opener = per.events.filter(e => e.kind === "pay" && !e.overdue && e.date === per.start);
+    const title = opener.length
+      ? `${opener.length > 1 ? "Paydays" : esc(opener[0].name)} ${shortDate(per.start)} → ${shortDate(per.end)}` : `Now → ${shortDate(per.end)}`;
     rows += `<tr class="period-row"><td colspan="5"><div class="prow"><span>${title} <span class="muted" style="font-weight:600">· bills ${fmt(per.bills)}</span></span><span><span class="muted" style="font-weight:600;font-size:.75rem">ends at</span> <span class="end ${per.endBal < 0 ? "neg" : ""}">${fmt(per.endBal)}</span></span></div></td></tr>`;
     if (!per.events.length) rows += `<tr><td colspan="5" class="muted" style="font-size:.85rem">Nothing due in this stretch.</td></tr>`;
     for (const e of per.events) {
@@ -591,13 +610,14 @@ function nextDue(b) { const d = occ(billRule(b), today(), addDays(today(), 400))
 
 function vBills() {
   const monthlyBills = state.bills.filter(b => b.active !== false).reduce((s, b) => s + b.amount * FREQ[b.freq].per, 0);
-  const monthlyPay = state.pay ? state.pay.amount * FREQ[state.pay.freq].per : 0;
+  const monthlyPay = state.pays.reduce((s, x) => s + x.amount * FREQ[x.freq].per, 0);
+  const hasPay = state.pays.length > 0;
   const sorted = [...state.bills].sort((a, b) => (nextDue(a) || "9") < (nextDue(b) || "9") ? -1 : 1);
   let html = `<section class="card">
     <div class="summary-grid">
       <div><span class="eyebrow">Bills per month</span><span class="v">${fmt(Math.round(monthlyBills))}</span><span class="item-sub">Averaged across schedules</span></div>
-      <div><span class="eyebrow">Deposits per month</span><span class="v">${state.pay ? fmt(Math.round(monthlyPay)) : "—"}</span><span class="item-sub">${state.pay ? FREQ[state.pay.freq].label : "No paycheck set"}</span></div>
-      <div><span class="eyebrow">Monthly surplus</span><span class="v ${monthlyPay - monthlyBills < 0 ? "neg" : "pos"}">${state.pay ? fmt(Math.round(monthlyPay - monthlyBills)) : "—"}</span><span class="item-sub">What's left over on average</span></div>
+      <div><span class="eyebrow">Deposits per month</span><span class="v">${hasPay ? fmt(Math.round(monthlyPay)) : "—"}</span><span class="item-sub">${hasPay ? (state.pays.length === 1 ? FREQ[state.pays[0].freq].label : state.pays.length + " paychecks combined") : "No paycheck set"}</span></div>
+      <div><span class="eyebrow">Monthly surplus</span><span class="v ${monthlyPay - monthlyBills < 0 ? "neg" : "pos"}">${hasPay ? fmt(Math.round(monthlyPay - monthlyBills)) : "—"}</span><span class="item-sub">What's left over on average</span></div>
     </div>
   </section>
   <section class="card">
@@ -653,21 +673,26 @@ function vActivity() {
 }
 
 function vPaycheck() {
-  const p = state.pay;
-  const rule = payRule();
-  const next = rule ? occ(rule, today(), addDays(today(), 120)).slice(0, 4) : [];
+  const total = state.pays.reduce((s, x) => s + x.amount * FREQ[x.freq].per, 0);
   return `<section class="card">
-    <div class="pad section-head"><h2>Paycheck</h2><button class="btn small ${p ? "" : "primary"}" data-a="pay">${p ? "Edit" : "Add paycheck"}</button></div>
-    ${p ? `<div class="list" style="border-top:1px solid var(--line)">
-      <div class="li"><div class="grow"><div class="item-name">Deposit into bills account</div><div class="item-sub">${FREQ[p.freq].label}${p.freq === "semimonthly" ? " · the " + ordinal(p.day1) + " and " + ordinal(p.day2) : ""}</div></div><div class="amt num pos">${fmt(p.amount, { plus: true })}</div></div>
-      <div class="li"><div class="grow"><div class="item-name">Next paydays</div><div class="item-sub">${next.map(d => fmtDate(d)).join(" · ") || "—"}</div></div></div>
-    </div>` : `<div class="empty">Add how much of each paycheck goes into this account and when it lands.</div>`}
+    <div class="pad section-head"><h2>Paychecks</h2><button class="btn small ${state.pays.length ? "" : "primary"}" data-a="pay">Add paycheck</button></div>
+    ${state.pays.length ? `<div class="list" style="border-top:1px solid var(--line)">${state.pays.map(x => {
+      const next = occ(payRule(x), today(), addDays(today(), 120)).slice(0, 3);
+      return `<div class="li">
+        <div class="grow"><div class="item-name">${esc(x.name)}</div>
+        <div class="item-sub">${FREQ[x.freq].label}${x.freq === "semimonthly" ? " · the " + ordinal(x.day1) + " and " + ordinal(x.day2) : ""} · next ${next.map(d => shortDate(d)).join(", ") || "—"}</div></div>
+        <div class="amt num pos">${fmt(x.amount, { plus: true })}</div>
+        <button class="btn small" data-a="edit-pay" data-id="${x.id}">Edit</button>
+      </div>`;
+    }).join("")}
+    ${state.pays.length > 1 ? `<div class="li"><div class="grow"><div class="item-name">Together</div><div class="item-sub">Average per month into the bills account</div></div><div class="amt num">${fmt(Math.round(total))}</div></div>` : ""}
+    </div>` : `<div class="empty">Add how much of each paycheck goes into this account and when it lands. If two of you put money in, add a paycheck for each.</div>`}
   </section>
   <section class="card">
     <div class="pad section-head"><h2>How the math works</h2><button class="btn small" data-a="prefs">Change</button></div>
     <div class="list" style="border-top:1px solid var(--line)">
       <div class="li"><div class="grow"><div class="item-name">Cushion</div><div class="item-sub">Always keep at least this much in the account</div></div><div class="amt num">${fmt(state.cushion)}</div></div>
-      <div class="li"><div class="grow"><div class="item-name">Look ahead</div><div class="item-sub">How many paychecks ahead to check before calling money "extra"</div></div><div class="amt num">${state.periods} paycheck${state.periods > 1 ? "s" : ""}</div></div>
+      <div class="li"><div class="grow"><div class="item-name">Look ahead</div><div class="item-sub">How many paychecks ahead (for each paycheck) to check before calling money "extra"</div></div><div class="amt num">${state.periods} paycheck${state.periods > 1 ? "s" : ""}</div></div>
     </div>
   </section>
   <section class="card">
@@ -749,7 +774,7 @@ function dlgEvent(key) {
         markBill(ev, a, which === "deduct");
       });
   } else {
-    openDlg(`<h3>Paycheck</h3>
+    openDlg(`<h3>${esc(ev.name)}</h3>
       <p class="muted" style="margin:0">Expected ${fmtDate(ev.orig)}</p>
       ${moneyField("amt", "Amount that landed in the bills account", ev.amount)}
       <div class="choice">
@@ -765,33 +790,37 @@ function dlgEvent(key) {
   }
 }
 
-function dlgPay() {
-  const p = state.pay || { amount: null, freq: "biweekly", anchor: today(), day1: 1, day2: 15 };
+function dlgPay(id) {
+  const cur = state.pays.find(x => x.id === id);
+  const p = cur || { name: state.pays.length ? "" : "My paycheck", amount: null, freq: "biweekly", anchor: today(), day1: 1, day2: 15 };
   const opts = ["weekly", "biweekly", "semimonthly", "monthly"].map(k => `<option value="${k}" ${p.freq === k ? "selected" : ""}>${FREQ[k].label}</option>`).join("");
   let nextAnchor = p.anchor;
-  if (state.pay) { const r = payRule(); nextAnchor = occ(r, today(), addDays(today(), 60))[0] || p.anchor; }
-  openDlg(`<h3>Paycheck deposit</h3>
+  if (cur) nextAnchor = occ(payRule(cur), today(), addDays(today(), 60))[0] || p.anchor;
+  openDlg(`<h3>${cur ? "Edit paycheck" : "Add a paycheck"}</h3>
+    <div class="field"><label for="pn2">Whose paycheck</label><input id="pn2" name="pn2" maxlength="30" placeholder="Wife's paycheck" value="${esc(p.name)}"></div>
     ${moneyField("pa", "How much goes into the bills account each payday", p.amount)}
     <div class="field"><label for="pf">How often</label><select id="pf" name="pf">${opts}</select></div>
     <div class="field" id="anchor-f"><label for="pd">Next payday</label><input type="date" id="pd" name="pd" value="${nextAnchor}"></div>
     <div class="two" id="semi-f"><div class="field"><label for="d1">First payday each month</label><input id="d1" name="d1" inputmode="numeric" value="${p.day1 || 1}"></div><div class="field"><label for="d2">Second payday</label><input id="d2" name="d2" inputmode="numeric" value="${p.day2 || 15}"></div></div>
-    <div class="dlg-actions">${state.pay ? `<button type="button" class="btn danger" id="pay-del">Remove</button>` : ""}${cancelBtn}<button class="btn primary" value="save">Save</button></div>`,
+    <div class="dlg-actions">${cur ? `<button type="button" class="btn danger" id="pay-del">Remove</button>` : ""}${cancelBtn}<button class="btn primary" value="save">Save</button></div>`,
     f => {
+      const name = f.pn2.value.trim() || "Paycheck";
       const a = parseMoney(f.pa.value);
       if (!a || isNaN(a) || a <= 0) return "Enter the deposit amount";
       const freq = f.pf.value;
       const d1 = parseInt(f.d1.value, 10), d2 = parseInt(f.d2.value, 10);
       if (freq === "semimonthly" && (!(d1 >= 1 && d1 <= 31) || !(d2 >= 1 && d2 <= 31) || d1 === d2)) return "Enter two different days between 1 and 31";
-      if (freq !== "semimonthly" && !f.pd.value) return "Pick your next payday";
-      const changed = !state.pay || state.pay.freq !== freq || (freq === "semimonthly" ? (state.pay.day1 !== d1 || state.pay.day2 !== d2) : f.pd.value !== nextAnchor);
-      state.pay = { amount: a, freq, anchor: freq === "semimonthly" ? today() : f.pd.value, day1: d1 || 1, day2: d2 || 15,
-        since: changed ? today() : (state.pay.since || today()) };
-      commit("Paycheck saved");
+      if (freq !== "semimonthly" && !f.pd.value) return "Pick the next payday";
+      const changed = !cur || cur.freq !== freq || (freq === "semimonthly" ? (cur.day1 !== d1 || cur.day2 !== d2) : f.pd.value !== nextAnchor);
+      const data = { name, amount: a, freq, anchor: freq === "semimonthly" ? today() : f.pd.value, day1: d1 || 1, day2: d2 || 15,
+        since: changed ? today() : (cur.since || today()) };
+      if (cur) Object.assign(cur, data); else state.pays.push(Object.assign({ id: uid() }, data));
+      commit(`${name} saved`);
     },
     f => {
       const sync = () => { const semi = f.pf.value === "semimonthly"; $("#semi-f").hidden = !semi; $("#anchor-f").hidden = semi; };
       f.pf.addEventListener("change", sync); sync();
-      const del = $("#pay-del"); if (del) del.addEventListener("click", () => { state.pay = null; dlg.close(); commit("Paycheck removed"); });
+      const del = $("#pay-del"); if (del) del.addEventListener("click", () => { state.pays = state.pays.filter(x => x.id !== id); dlg.close(); commit(`${cur.name} removed`); });
     });
 }
 
@@ -936,7 +965,9 @@ document.addEventListener("click", e => {
   const a = el.dataset.a, id = el.dataset.id;
   if (a === "undo") { $("#toast").hidden = true; undo(id); }
   else if (a === "balance") dlgBalance();
-  else if (a === "pay") dlgPay();
+  else if (a === "pay") dlgPay(null);
+  else if (a === "edit-pay") dlgPay(id);
+  else if (a === "goto-paycheck") location.hash = "paycheck";
   else if (a === "add-bill") dlgBill(null);
   else if (a === "edit-bill") dlgBill(id);
   else if (a === "add-debt") dlgDebt(null);

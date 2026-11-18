@@ -18,7 +18,7 @@ no dependencies (fonts come from Google Fonts, with system fonts as a fallback).
   amount, or note that your balance already shows it, so nothing is counted twice.
 - **Bills**: weekly, every 2 weeks, monthly (by due day), every 3 months, yearly or one-time.
   Shows your monthly bill total against your monthly deposits.
-- **Pay schedule**: weekly, every 2 weeks, twice a month (two days of the month) or monthly.
+- **Paychecks**: add one for each person who deposits into the account, each with its own amount and schedule: weekly, every 2 weeks, twice a month (two days of the month) or monthly.
 - **Debts**: card and loan balances with APR. The highest-interest card is marked as the one to
   pay extra on first, and recording a payment lowers both the account and the debt.
 - **Activity**: a log of every change, and each entry can be undone.
