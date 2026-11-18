@@ -224,7 +224,7 @@ const parseMoney = str => {
   const n = Number(t);
   return Number.isFinite(n) ? Math.round(n * 100) : NaN;
 };
-const moneyIn = c => c == null ? "" : (c / 100).toFixed(2);
+const moneyIn = c => c == null ? "" : (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (s, long) => parseD(s).toLocaleDateString("en-US", long ? { weekday: "short", month: "short", day: "numeric", year: "numeric" } : { weekday: "short", month: "short", day: "numeric" });
 const shortDate = s => parseD(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 const ordinal = n => n + (["th","st","nd","rd"][(n % 100 - 20) % 10] || ["th","st","nd","rd"][n % 100] || "th");
@@ -736,7 +736,7 @@ function openDlg(html, onSubmit, onReady) {
   const first = form.querySelector("input:not([type=checkbox]),select");
   if (first && !matchMedia("(pointer:coarse)").matches) first.focus();
 }
-const moneyField = (id, label, val, hint) => `<div class="field"><label for="${id}">${label}</label><input id="${id}" name="${id}" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${moneyIn(val)}">${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
+const moneyField = (id, label, val, hint) => `<div class="field"><label for="${id}">${label}</label><input id="${id}" name="${id}" data-money inputmode="numeric" autocomplete="off" placeholder="0.00" value="${moneyIn(val)}">${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
 const cancelBtn = `<button type="button" class="btn" data-close>Cancel</button>`;
 
 function dlgBalance() {
@@ -973,6 +973,28 @@ function toast(msg, undoId) {
 }
 
 /* ---------- events ---------- */
+// money fields fill from the right like a register: typing 1 2 3 4 gives 12.34
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (!el.matches || !el.matches("input[data-money]")) return;
+  let cents;
+  if (e.inputType === "insertFromPaste" || e.inputType === "insertReplacementText") {
+    cents = parseMoney(el.value);
+    if (cents == null || isNaN(cents)) cents = null;
+  } else {
+    const digits = el.value.replace(/\D/g, "").replace(/^0+/, "").slice(0, 11);
+    cents = digits ? parseInt(digits, 10) : null;
+  }
+  el.value = cents == null ? "" : moneyIn(Math.abs(cents));
+  const end = el.value.length;
+  try { el.setSelectionRange(end, end); } catch (err) {}
+});
+// tapping a filled money field selects it, so typing replaces the amount
+document.addEventListener("focusin", e => {
+  const el = e.target;
+  if (el.matches && el.matches("input[data-money]") && el.value) setTimeout(() => { try { el.select(); } catch (err) {} }, 0);
+});
+
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-a]");
   if (!el || !state) return;
