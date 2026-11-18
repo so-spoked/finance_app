@@ -130,7 +130,7 @@ main.wrap{padding-block:18px 64px;display:flex;flex-direction:column;gap:18px}
 .step .grow{flex:1;min-width:0}
 
 /* forms / dialog */
-dialog{border:none;padding:0;border-radius:14px;background:var(--surface);color:var(--ink);width:min(480px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+dialog{overflow:auto;overscroll-behavior:contain;border:none;padding:0;border-radius:14px;background:var(--surface);color:var(--ink);width:min(480px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
 dialog::backdrop{background:rgba(8,14,12,.55)}
 .dlg{padding:20px;display:flex;flex-direction:column;gap:14px}
 .dlg h3{font-size:1.1rem;font-weight:800}
@@ -277,7 +277,8 @@ const blank = () => ({ v: 1, balance: 0, balanceSet: false, balanceAt: null, cus
   pays: [], bills: [], paid: [], received: [], debts: [], log: [], example: false });
 let state = null;
 function normalize(d) {
-  const s = Object.assign(blank(), d || {});
+  // deep copy: data handed back by the store can be read-only
+  const s = Object.assign(blank(), JSON.parse(JSON.stringify(d || {})));
   for (const k of ["bills", "paid", "received", "debts", "log", "pays"]) if (!Array.isArray(s[k])) s[k] = [];
   // older saves had a single paycheck
   if (s.pay && !s.pays.length) {
@@ -292,7 +293,7 @@ function normalize(d) {
 /* ---------- persistence: claude.ai db, falling back to this browser ---------- */
 const LS_KEY = "bills-account-v1";
 let mode = "loading"; // "db" | "local" | "loading"
-let docRef = null, dirty = false, writing = false, saveTimer = null, loadTimer = null;
+let docRef = null, dirty = false, writing = false, saveTimer = null, loadTimer = null, retryDelay = 2000;
 
 function setSync(kind, text) {
   $("#sync").innerHTML = `<span class="dot ${kind}"></span><span>${esc(text)}</span>`;
@@ -322,14 +323,19 @@ async function flush() {
   try {
     await docRef.set(JSON.parse(JSON.stringify(state)));
     setSync("ok", "Synced");
+    retryDelay = 2000;
   } catch (e) {
-    setSync("local", "Not saved – " + (e && e.code === "not_granted" ? "permission needed" : "retrying"));
+    const code = (e && e.code) || "error";
+    const fatal = ["invalid_argument", "not_granted", "revoked", "transform_error", "capability_disabled", "capability_removed"].includes(code);
+    setSync("local", fatal ? "Not saved (" + code + ")" : "Not saved – retrying");
+    toast(fatal ? "Couldn't save to your account (" + code + ")." : "Couldn't save yet. Trying again…");
     dirty = true;
-    setTimeout(flush, 4000);
-  } finally {
+    if (!fatal) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, retryDelay); retryDelay = Math.min(retryDelay * 2, 60000); }
     writing = false;
-    if (dirty) flush();
+    return;
   }
+  writing = false;
+  if (dirty) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 350); }
 }
 async function init() {
   if (!window.claude || typeof window.claude.use !== "function") { useLocal("This device only"); return; }
@@ -712,8 +718,16 @@ function openDlg(html, onSubmit, onReady) {
   form.addEventListener("submit", e => {
     e.preventDefault();
     const submitter = e.submitter;
-    const err = onSubmit(form, submitter ? submitter.value : "");
-    if (typeof err === "string") { const el = form.querySelector(".err") || form.insertAdjacentElement("beforeend", Object.assign(document.createElement("div"), { className: "err" })); el.textContent = err; return; }
+    let err;
+    try { err = onSubmit(form, submitter ? submitter.value : ""); }
+    catch (ex) { err = "Something went wrong: " + (ex && ex.message || ex); }
+    if (typeof err === "string") {
+      let el = form.querySelector(".err");
+      if (!el) { el = Object.assign(document.createElement("div"), { className: "err", role: "alert" }); form.querySelector("h3").insertAdjacentElement("afterend", el); }
+      el.textContent = err;
+      el.scrollIntoView({ block: "nearest" });
+      return;
+    }
     dlg.close();
   });
   form.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => dlg.close()));
