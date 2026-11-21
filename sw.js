@@ -1,6 +1,6 @@
 // Offline support: serve the app from the on-device cache and refresh it in the background.
 // Bump VERSION when the list of core files changes.
-const VERSION = "bills-v4";
+const VERSION = "bills-v5";
 const CORE = [
   "./",
   "index.html",
@@ -15,7 +15,10 @@ const CORE = [
 const FONT_HOSTS = ["fonts.googleapis.com", "fonts.gstatic.com"];
 
 self.addEventListener("install", event => {
-  event.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
+  // cache: "reload" skips the browser's HTTP cache so a new version gets the new files
+  event.waitUntil(caches.open(VERSION)
+    .then(c => c.addAll(CORE.map(u => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", event => {
