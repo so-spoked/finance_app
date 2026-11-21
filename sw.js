@@ -1,6 +1,6 @@
 // Offline support: serve the app from the on-device cache and refresh it in the background.
 // Bump VERSION when the list of core files changes.
-const VERSION = "bills-v5";
+const VERSION = "bills-v6"; // app version 1.8
 const CORE = [
   "./",
   "index.html",
@@ -37,6 +37,8 @@ self.addEventListener("fetch", event => {
   // Firebase sign-in and database traffic is never cached here; Firestore keeps its own offline copy.
   if (!sameOrigin && !FONT_HOSTS.includes(url.hostname)) return;
   if (sameOrigin && url.pathname.includes("/__/")) return;
+  // always ask the server which version is current
+  if (sameOrigin && url.pathname.endsWith("/version.json")) return;
 
   const key = req.mode === "navigate" ? new Request(new URL("./", self.location).href) : req;
   event.respondWith(

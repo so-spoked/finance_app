@@ -81,3 +81,12 @@ new app choose *Restore a backup* (or the same Paycheck menu), paste and restore
 ## Run it
 
 - **Locally:** open `index.html` in a browser.
+
+## Versions
+
+The app shows its version at the bottom of every screen (tap it for *What's new*), and the installed
+app checks `version.json` to say whether it's up to date. To release a change:
+
+1. Add an entry at the top of `RELEASES` in `index.html` (number, short name, date, notes).
+2. Put the same number, name and date in `version.json`.
+3. Bump `VERSION` in `sw.js` so installed apps fetch the new files.

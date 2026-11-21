@@ -159,6 +159,13 @@ dialog::backdrop{background:rgba(8,14,12,.55)}
 .inline-check input{width:18px;height:18px}
 .preview{font-size:.85rem;color:var(--muted);background:var(--surface-2);border-radius:8px;padding:10px 12px}
 
+.app-foot{padding-block:4px 28px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:center;font-size:.78rem;color:var(--muted);text-align:center}
+.app-foot .ver{background:none;border:none;padding:4px 2px;font:inherit;color:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.app-foot .ver b{color:var(--ink);font-weight:700}
+.upd{display:inline-flex;align-items:center;gap:6px}
+.upd .btn{min-height:28px;padding:3px 10px;font-size:.78rem}
+.changes{display:flex;flex-direction:column;gap:10px;max-height:55vh;overflow:auto}
+.changes div{display:flex;flex-direction:column;gap:2px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:700;font-size:.9rem;z-index:20;display:flex;gap:12px;align-items:center;max-width:calc(100vw - 32px)}
 .toast button{background:none;border:none;color:var(--bg);text-decoration:underline;font-weight:800;cursor:pointer}
 
@@ -199,6 +206,8 @@ dialog::backdrop{background:rgba(8,14,12,.55)}
 <main class="wrap" id="main">
   <div class="card empty">Loading your bills account…</div>
 </main>
+
+<footer class="wrap app-foot" id="foot"></footer>
 
 <dialog id="dlg"><div id="dlg-body"></div></dialog>
 <div class="toast" id="toast" hidden></div>
@@ -446,6 +455,11 @@ function renderNoAccess() {
 }
 
 async function init() {
+  renderFoot();
+  checkForUpdate();
+  window.addEventListener("online", checkForUpdate);
+  window.addEventListener("offline", checkForUpdate);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForUpdate(); });
   const inClaude = window.claude && typeof window.claude.use === "function";
   if (!inClaude && window.firebase && window.FIREBASE_CONFIG) { initFirebase(); return; }
   if (!inClaude) { useLocal("This device only"); return; }
@@ -634,6 +648,55 @@ function loadExample() {
 /* ---------- rendering ---------- */
 const ICON_PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+/* ---------- version ----------
+   Each release: add an entry at the top of RELEASES, put the same number in version.json,
+   and bump VERSION in sw.js. */
+const RELEASES = [
+  { v: "1.8", name: "Version label", date: "2026-11-21", notes: "Version name at the bottom of the app, with a check for updates." },
+  { v: "1.7", name: "Auto update", date: "2026-11-21", notes: "The installed app updates itself without reinstalling." },
+  { v: "1.6", name: "Fuel budget", date: "2026-11-21", notes: "Fuel is a weekly budget; add purchases as they happen with + Add fuel." },
+  { v: "1.5", name: "Import link", date: "2026-11-21", notes: "One-time links to bring data into the app." },
+  { v: "1.4", name: "Offline app", date: "2026-11-21", notes: "Installable app that works offline and syncs through Firebase." },
+  { v: "1.3", name: "Easy amounts", date: "2026-11-18", notes: "Dollar amounts fill in the decimal point for you." },
+  { v: "1.2", name: "Saving fix", date: "2026-11-18", notes: "Fixed paychecks and bills not saving after the first change." },
+  { v: "1.1", name: "Two paychecks", date: "2026-11-18", notes: "A separate paycheck and schedule for each person." },
+  { v: "1.0", name: "First release", date: "2026-11-18", notes: "Balance, paycheck, bills, debts and the extra-for-debt number." }
+];
+const APP_VERSION = RELEASES[0];
+let updState = "";
+function renderFoot() {
+  const standalone = !(window.claude && window.claude.use) && location.protocol !== "file:";
+  const upd = !standalone ? "" :
+    updState === "current" ? `<span class="upd"><span class="dot ok"></span>Up to date</span>` :
+    updState === "new" ? `<span class="upd"><span class="dot busy"></span>${esc(latestName)} is available <button class="btn primary" data-a="update-now">Update now</button></span>` :
+    updState === "offline" ? `<span class="upd"><span class="dot"></span>Offline · can't check for updates</span>` :
+    updState === "checking" ? `<span class="upd">Checking for updates…</span>` : "";
+  $("#foot").innerHTML = `<button class="ver" data-a="whatsnew" title="What's new">Version <b>${APP_VERSION.v} · ${esc(APP_VERSION.name)}</b> · ${shortDate(APP_VERSION.date)}</button>${upd}`;
+}
+let latestName = "";
+async function checkForUpdate() {
+  if ((window.claude && window.claude.use) || location.protocol === "file:") return;
+  if (!navigator.onLine) { updState = "offline"; renderFoot(); return; }
+  try {
+    const res = await fetch("version.json?t=" + Date.now(), { cache: "no-store" });
+    const j = await res.json();
+    latestName = "Version " + j.v + " · " + j.name;
+    updState = j.v === APP_VERSION.v ? "current" : "new";
+  } catch (e) { updState = navigator.onLine ? "" : "offline"; }
+  renderFoot();
+}
+function dlgWhatsNew() {
+  openDlg(`<h3>What's new</h3>
+    <div class="changes">${RELEASES.map(r => `<div><span class="item-name">${r.v} · ${esc(r.name)} <span class="muted" style="font-weight:500">· ${shortDate(r.date)}</span></span><span class="item-sub">${esc(r.notes)}</span></div>`).join("")}</div>
+    <div class="dlg-actions"><button type="button" class="btn primary" data-close>Close</button></div>`, () => {});
+}
+async function updateNow() {
+  updState = "checking"; renderFoot();
+  try { const reg = await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } catch (e) {}
+  // the new version reloads the page when it takes over; reload anyway if that doesn't happen
+  setTimeout(() => location.reload(), 4000);
+}
+
 const VIEWS = ["overview", "bills", "debts", "activity", "paycheck"];
 function view() { const h = location.hash.slice(1); return VIEWS.includes(h) ? h : "overview"; }
 
@@ -1185,6 +1248,8 @@ document.addEventListener("focusin", e => {
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-a]");
   if (el && el.dataset.a === "signin") { signIn(); return; }
+  if (el && el.dataset.a === "whatsnew") { dlgWhatsNew(); return; }
+  if (el && el.dataset.a === "update-now") { updateNow(); return; }
   if (el && el.dataset.a === "signout") { if (fbAuth) fbAuth.signOut(); return; }
   if (!el || !state) return;
   const a = el.dataset.a, id = el.dataset.id;
