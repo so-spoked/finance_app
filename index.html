@@ -317,6 +317,7 @@ function useLocal(reason) {
   state = normalize(saved);
   setSync("local", reason || "This device only");
   render();
+  checkImport();
 }
 function save() {
   dirty = true;
@@ -401,6 +402,7 @@ function initFirebase() {
       state = normalize(snap.exists ? snap.data() : null);
       fbSync();
       if (!dlg.open) render();
+      checkImport();
     }, err => {
       if (err && err.code === "permission-denied") renderNoAccess();
       else setSync("local", "Sync error – " + ((err && err.code) || "unknown"));
@@ -1062,6 +1064,37 @@ function dlgExport() {
         try { await navigator.clipboard.writeText(json); toast("Copied"); } catch (e) { f.bk.focus(); f.bk.select(); toast("Selected – copy it with your keyboard or long-press"); }
       });
     });
+}
+
+/* one-time import link: #import=<gzip+base64url JSON>. The hash never leaves the device. */
+let importChecked = false;
+async function decodeImport(code) {
+  let b64 = code.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return JSON.parse(await new Response(stream).text());
+}
+async function checkImport() {
+  if (importChecked || !state) return;
+  const m = location.hash.match(/^#import=([A-Za-z0-9_-]+)$/);
+  if (!m) return;
+  importChecked = true;
+  history.replaceState(null, "", location.pathname + location.search);
+  let data;
+  try { data = await decodeImport(m[1]); if (!data || !Array.isArray(data.bills)) throw 0; }
+  catch (e) { toast("That import link is damaged. Ask for a new one."); return; }
+  const inc = normalize(data);
+  const hasData = state.balanceSet || state.bills.length || state.pays.length;
+  openDlg(`<h3>Import your data?</h3>
+    <div class="preview">
+      Balance <b class="num">${fmt(inc.balance)}</b><br>
+      ${inc.pays.length} paycheck${inc.pays.length === 1 ? "" : "s"} (${inc.pays.map(x => esc(x.name)).join(", ")})<br>
+      ${inc.bills.length} bills · ${inc.debts.length} debts · ${inc.log.length} activity entries
+    </div>
+    ${hasData ? `<p style="margin:0" class="neg"><b>This replaces what's in the app now</b> (balance ${fmt(state.balance)}, ${state.bills.length} bills) on every device.</p>` : ""}
+    <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="import">Import</button></div>`,
+    () => { state = inc; commit("Imported " + inc.bills.length + " bills and " + inc.pays.length + " paychecks"); });
 }
 
 function dlgReset() {
