@@ -13,6 +13,17 @@ img{max-width:100%}
 </style>
 <title>Bills Account Tracker</title>
 <meta name="claude:viewport-fit-sides" content="cover">
+<!-- standalone:start -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<script src="vendor/firebase-app-compat.js"></script>
+<script src="vendor/firebase-auth-compat.js"></script>
+<script src="vendor/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<!-- standalone:end -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
@@ -290,7 +301,7 @@ function normalize(d) {
   return s;
 }
 
-/* ---------- persistence: claude.ai db, falling back to this browser ---------- */
+/* ---------- persistence: Firebase (installed app), claude.ai db (artifact), or this browser ---------- */
 const LS_KEY = "bills-account-v1";
 let mode = "loading"; // "db" | "local" | "loading"
 let docRef = null, dirty = false, writing = false, saveTimer = null, loadTimer = null, retryDelay = 2000;
@@ -313,9 +324,9 @@ function save() {
     try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {}
     dirty = false; return;
   }
-  setSync("busy", "Saving…");
+  if (mode !== "firebase") setSync("busy", "Saving…");
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(flush, 350);
+  saveTimer = setTimeout(mode === "firebase" ? flushFb : flush, 350);
 }
 async function flush() {
   if (!docRef || writing) return;
@@ -337,8 +348,104 @@ async function flush() {
   writing = false;
   if (dirty) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 350); }
 }
+/* Firebase: Google sign-in, one shared household document, offline cache */
+let fbAuth = null, fbDoc = null, fbUnsub = null, fbUser = null, fbMeta = null;
+function fbSync() {
+  if (mode !== "firebase") return;
+  if (!navigator.onLine) setSync("busy", "Offline – saved on this device");
+  else if (dirty || (fbMeta && fbMeta.hasPendingWrites)) setSync("busy", "Syncing…");
+  else setSync("ok", "Synced");
+}
+function flushFb() {
+  if (!fbDoc || !state) return;
+  dirty = false;
+  // set() lands in the on-device cache immediately and is sent when online; don't wait on it
+  fbDoc.set(JSON.parse(JSON.stringify(state))).catch(e => {
+    if (e && e.code === "permission-denied") renderNoAccess();
+    else { setSync("local", "Not saved"); toast("Couldn't save (" + ((e && e.code) || "error") + ")."); }
+  });
+  fbSync();
+}
+function initFirebase() {
+  mode = "signin";
+  setSync("busy", "Loading…");
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  fbAuth = firebase.auth();
+  const fs = firebase.firestore();
+  if (window.__FB_EMULATOR) {
+    fbAuth.useEmulator("http://127.0.0.1:" + window.__FB_EMULATOR.auth);
+    fs.useEmulator("127.0.0.1", window.__FB_EMULATOR.firestore);
+  }
+  fs.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+  fbDoc = fs.collection("households").doc("home");
+  fbAuth.getRedirectResult().catch(authError);
+  window.addEventListener("online", fbSync);
+  window.addEventListener("offline", fbSync);
+  fbAuth.onAuthStateChanged(user => {
+    fbUser = user;
+    if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+    if (!user) { mode = "signin"; state = null; setSync("local", "Signed out"); renderSignIn(); return; }
+    mode = "loading";
+    setSync("busy", "Loading…");
+    fbUnsub = fbDoc.onSnapshot({ includeMetadataChanges: true }, snap => {
+      fbMeta = snap.metadata;
+      if (dirty) return; // local edits waiting to be written
+      if (!snap.exists && snap.metadata.fromCache) {
+        // nothing cached yet and no answer from the server: don't start a blank budget
+        if (!state) $("#main").innerHTML = `<div class="card empty">Connect to the internet once to load your bills account on this device.</div>`;
+        setSync("busy", navigator.onLine ? "Loading…" : "Offline");
+        return;
+      }
+      if (snap.metadata.hasPendingWrites && state && mode === "firebase") { fbSync(); return; }
+      mode = "firebase";
+      state = normalize(snap.exists ? snap.data() : null);
+      fbSync();
+      if (!dlg.open) render();
+    }, err => {
+      if (err && err.code === "permission-denied") renderNoAccess();
+      else setSync("local", "Sync error – " + ((err && err.code) || "unknown"));
+    });
+  });
+}
+function authError(e) {
+  if (!e || e.code === "auth/popup-closed-by-user" || e.code === "auth/cancelled-popup-request") return;
+  const msg = e.code === "auth/network-request-failed" ? "Connect to the internet to sign in." :
+    e.code === "auth/unauthorized-domain" ? "This website isn't on the Firebase project's list of authorized domains yet." :
+    "Sign-in didn't work (" + (e.code || e.message) + ").";
+  const el = $("#signin-err"); if (el) el.textContent = msg; else toast(msg);
+}
+async function signIn() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try { await fbAuth.signInWithPopup(provider); }
+  catch (e) {
+    if (e && (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment")) {
+      try { await fbAuth.signInWithRedirect(provider); } catch (e2) { authError(e2); }
+    } else authError(e);
+  }
+}
+function renderSignIn() {
+  $("#main").innerHTML = `<section class="card pad" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
+    <h2>Sign in to your bills account</h2>
+    <p class="muted" style="margin:0;max-width:52ch">Sign in with the Google account that has access. After that, the app keeps working with no internet and syncs your changes when you're back online.</p>
+    <button class="btn primary" data-a="signin">Sign in with Google</button>
+    <div class="err" id="signin-err" role="alert"></div>
+  </section>`;
+}
+function renderNoAccess() {
+  state = null; mode = "signin";
+  setSync("local", "No access");
+  $("#main").innerHTML = `<section class="card pad" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">
+    <h2>This account doesn't have access</h2>
+    <p class="muted" style="margin:0;max-width:52ch">You're signed in as <b>${esc(fbUser && fbUser.email)}</b>. Only the Google accounts listed in the Firebase rules can open this bills account. Sign out and use the right account, or add this one to the rules.</p>
+    <button class="btn" data-a="signout">Sign out</button>
+  </section>`;
+}
+
 async function init() {
-  if (!window.claude || typeof window.claude.use !== "function") { useLocal("This device only"); return; }
+  const inClaude = window.claude && typeof window.claude.use === "function";
+  if (!inClaude && window.firebase && window.FIREBASE_CONFIG) { initFirebase(); return; }
+  if (!inClaude) { useLocal("This device only"); return; }
   loadTimer = setTimeout(() => { if (mode === "loading") useLocal("Couldn't reach sync – this device only"); }, 10000);
   try {
     const [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]);
@@ -517,7 +624,7 @@ function render() {
   document.querySelectorAll("#tabs a").forEach(a => a.setAttribute("aria-current", a.getAttribute("href") === "#" + v ? "page" : "false"));
   let html = "";
   if (state.example) html += `<div class="banner"><span>You're looking at example numbers.</span><button class="btn small" data-a="clear-example">Clear and start with mine</button></div>`;
-  if (mode === "local") html += `<div class="banner"><span>Saving to this browser only. Open this page from your claude.ai account to keep your phone and computer in sync.</span></div>`;
+  if (mode === "local") html += `<div class="banner"><span>Saving to this browser only. Use Paycheck → Back up / restore to move your data to another device.</span></div>`;
   html += ({ overview: vOverview, bills: vBills, debts: vDebts, activity: vActivity, paycheck: vPaycheck })[v]();
   $("#main").innerHTML = html;
 }
@@ -530,7 +637,7 @@ function vSetup() {
     ${step(s1, 1, "Current balance", s1 ? fmt(state.balance) + " in the account" : "What your bank shows in the bills checking account right now", "balance", "Enter balance")}
     ${step(s2, 2, "Paychecks", s2 ? state.pays.map(x => esc(x.name) + " " + fmt(x.amount)).join(" · ") : "How much of each paycheck goes into this account, and when. Add one for each of you.", s2 ? "goto-paycheck" : "pay", "Add paycheck")}
     ${step(s3, 3, "Bills", s3 ? state.bills.length + " bills added" : "Rent, car, phone, anything that comes out of this account", "add-bill", "Add a bill")}
-    ${!s1 && !s2 && !s3 ? `<div class="pad" style="border-top:1px solid var(--line)"><button class="btn link" data-a="example">Or try it first with example numbers</button></div>` : ""}
+    ${!s1 && !s2 && !s3 ? `<div class="pad row-btns" style="border-top:1px solid var(--line)"><button class="btn link" data-a="export">Moving your data from another copy? Restore a backup</button><button class="btn link" data-a="example">Try it with example numbers</button></div>` : ""}
   </section>`;
 }
 
@@ -703,6 +810,7 @@ function vPaycheck() {
   </section>
   <section class="card">
     <div class="pad section-head"><h2>Your data</h2></div>
+    ${mode === "firebase" && fbUser ? `<div class="li" style="border-top:1px solid var(--line)"><div class="grow"><div class="item-name">Signed in</div><div class="item-sub">${esc(fbUser.email)} · syncs across your devices</div></div><button class="btn small" data-a="signout">Sign out</button></div>` : ""}
     <div class="pad row-btns" style="border-top:1px solid var(--line)">
       <button class="btn small" data-a="export">Back up / restore</button>
       <button class="btn small danger" data-a="reset">Erase everything</button>
@@ -997,6 +1105,8 @@ document.addEventListener("focusin", e => {
 
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-a]");
+  if (el && el.dataset.a === "signin") { signIn(); return; }
+  if (el && el.dataset.a === "signout") { if (fbAuth) fbAuth.signOut(); return; }
   if (!el || !state) return;
   const a = el.dataset.a, id = el.dataset.id;
   if (a === "undo") { $("#toast").hidden = true; undo(id); }
@@ -1023,6 +1133,10 @@ dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
 setInterval(() => { if (state && !dlg.open) render(); }, 5 * 60 * 1000);
 
 init();
+
+if ("serviceWorker" in navigator && !(window.claude && window.claude.use) && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
+}
 })();
 </script>
 

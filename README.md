@@ -26,16 +26,58 @@ no dependencies (fonts come from Google Fonts, with system fonts as a fallback).
 
 ## Where your data is saved
 
-- **On claude.ai** (the published artifact): data is saved to your claude.ai account, so your
-  phone and computer stay in sync. Only you can see it.
-- **Opened anywhere else** (from this repo, GitHub Pages or a local file): data is saved in that
-  browser only, and a banner says so. Use *Paycheck → Back up / restore* to move it between
-  devices.
+- **Installed app (GitHub Pages + Firebase):** data is stored in your own Firebase project and
+  synced to every device signed in with an allowed Google account. The app works offline:
+  changes are saved on the device and sync when it's back online.
+- **On claude.ai** (the published artifact): data is saved to your claude.ai account. It needs
+  an internet connection.
+- **Anywhere else without Firebase settings** (a local file, for example): data is saved in that
+  browser only. Use *Paycheck → Back up / restore* to move it.
+
+## Set up the installed app
+
+1. **Create a Firebase project** at https://console.firebase.google.com (Google Analytics is not
+   needed). The free Spark plan is enough.
+2. **Turn on Google sign-in:** *Build → Authentication → Get started → Sign-in method → Google →
+   Enable → Save*. Then under *Settings → Authorized domains*, add `so-spoked.github.io`.
+3. **Create the database:** *Build → Firestore Database → Create database*, pick a location near
+   you, and start in **production mode**.
+4. **Lock it to your household:** in *Firestore Database → Rules*, replace everything with the rules
+   below, put in the Google addresses that should have access, and *Publish*.
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /households/home {
+         allow read, write: if request.auth != null
+           && request.auth.token.email_verified == true
+           && request.auth.token.email in ['first@example.com', 'second@example.com'];
+       }
+     }
+   }
+   ```
+
+5. **Connect the app:** *Project settings → General → Your apps → Web (`</>`)*, register an app
+   (no Firebase Hosting needed), and copy the `firebaseConfig` values into `firebase-config.js`:
+   `window.FIREBASE_CONFIG = { apiKey: "...", authDomain: "...", projectId: "...", ... };`
+   These values identify the project and are not secret; the rules above control access.
+6. **Publish with GitHub Pages:** *Settings → Pages → Deploy from a branch → `main` / root*. The app
+   is then at `https://so-spoked.github.io/finance_app/`. (Free GitHub accounts need the repository
+   to be public for Pages. The repository holds only code, no personal data.)
+7. **Install it:** open that address in Chrome on Android, sign in, then *⋮ → Install app* (or *Add to
+   Home screen*). On a computer, use the install icon in Chrome's address bar.
+
+To move existing data in, open the old copy, go to *Paycheck → Back up / restore → Copy*, then in the
+new app choose *Restore a backup* (or the same Paycheck menu), paste and restore.
+
+## Files
+
+- `index.html`: the app.
+- `firebase-config.js`: Firebase project settings (null = no sync).
+- `sw.js`, `manifest.webmanifest`, `icons/`: offline support and installation.
+- `vendor/`: Firebase JavaScript SDK 10.14.1 (compat builds), bundled so the app loads offline.
 
 ## Run it
 
 - **Locally:** open `index.html` in a browser.
-- **GitHub Pages:** in the repo, go to *Settings → Pages*, choose *Deploy from a branch*, then
-  pick `main` and the `/ (root)` folder. The site will be at
-  `https://so-spoked.github.io/finance_app/`.
-- **Android:** open the page in Chrome, then use the ⋮ menu → *Add to Home screen*.
