@@ -1,6 +1,6 @@
 // Offline support: serve the app from the on-device cache and refresh it in the background.
 // Bump VERSION when the list of core files changes.
-const VERSION = "bills-v3";
+const VERSION = "bills-v4";
 const CORE = [
   "./",
   "index.html",

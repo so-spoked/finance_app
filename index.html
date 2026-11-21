@@ -298,6 +298,7 @@ function normalize(d) {
     s.received = s.received.map(k => k.includes("|") ? k : id + "|" + k);
   }
   delete s.pay;
+  for (const b of s.bills) if (!b.kind) b.kind = /^(fuel|gas)\b/i.test(b.name || "") ? "budget" : "bill";
   return s;
 }
 
@@ -481,6 +482,13 @@ function payRule(p) {
   if (p.freq === "semimonthly") { r.day = p.day1 || 1; r.day2 = p.day2 || 15; }
   return r;
 }
+// a budget period ends on each scheduled date and starts the day after the previous one
+function budgetStart(b, d) { return occ(billRule(b), addDays(d, -400), addDays(d, -1)).slice(-1)[0] || addDays(d, -31); }
+function spentIn(b, d) {
+  const start = budgetStart(b, d);
+  return state.log.filter(l => l.type === "spend" && l.billId === b.id && l.d > start && l.d <= d).reduce((s, l) => s - l.amount, 0);
+}
+function currentBudgetEnd(b) { return occ(billRule(b), today(), addDays(today(), 400))[0]; }
 function billRule(b) { return { freq: b.freq, anchor: b.anchor || b.since, day: b.day || 1 }; }
 
 function project() {
@@ -511,6 +519,14 @@ function project() {
   }
   for (const b of state.bills) {
     if (b.active === false) continue;
+    if (b.kind === "budget") {
+      // spending budget: hold back only what's left of each period's budget; past periods are closed
+      for (const d of occ(billRule(b), maxD(b.since || T, T), horizonEnd)) {
+        const left = Math.max(0, b.amount - spentIn(b, d));
+        if (left > 0) events.push({ kind: "bill", key: b.id + "|" + d, orig: d, date: d, overdue: false, amount: left, name: b.name, bill: b, budget: true, spent: b.amount - left });
+      }
+      continue;
+    }
     const from = maxD(b.since || T, addDays(T, -60));
     for (const d of occ(billRule(b), from, horizonEnd)) {
       const key = b.id + "|" + d;
@@ -616,6 +632,7 @@ function loadExample() {
 }
 
 /* ---------- rendering ---------- */
+const ICON_PLUS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 const VIEWS = ["overview", "bills", "debts", "activity", "paycheck"];
 function view() { const h = location.hash.slice(1); return VIEWS.includes(h) ? h : "overview"; }
@@ -665,6 +682,7 @@ function vOverview() {
       <div class="row-btns" style="margin-top:4px">
         <button class="btn primary" data-a="extra" ${p.safe <= 0 && !state.debts.length ? "" : ""}>Pay toward a debt</button>
         <button class="btn" data-a="balance">Update balance</button>
+        ${state.bills.filter(b => b.kind === "budget" && b.active !== false).map(b => `<button class="btn" data-a="spend" data-id="${b.id}">+ Add ${esc(b.name.toLowerCase())}</button>`).join("")}
       </div>
     </div>
     <div class="stats">
@@ -688,13 +706,14 @@ function vOverview() {
     for (const e of per.events) {
       const isLow = e.after === p.min && e.date === p.minDate;
       const sub = e.overdue ? `<div class="item-sub warn">Was due ${shortDate(e.orig)} · not checked off</div>`
+        : e.budget ? `<div class="item-sub">${e.spent > 0 ? fmt(e.spent) + " of " + fmt(e.bill.amount) + " spent · this is what's left" : "Budget · nothing spent yet"}</div>`
         : e.kind === "bill" ? `<div class="item-sub">${e.bill.autopay ? "Autopay" : "Pay manually"}</div>` : `<div class="item-sub">Deposit</div>`;
       rows += `<tr class="${isLow ? "low" : ""}">
         <td class="date">${shortDate(e.orig)}</td>
         <td><div class="item-name">${esc(e.name)}</div>${sub}</td>
         <td class="amt num ${e.kind === "pay" ? "pos" : ""}">${e.kind === "pay" ? fmt(e.amount, { plus: true }) : fmt(-e.amount)}<div class="item-sub show-sm ${e.after < 0 ? "neg" : ""}">bal ${fmt(e.after)}</div></td>
         <td class="bal num hide-sm ${e.after < 0 ? "neg" : ""}">${fmt(e.after)}</td>
-        <td class="act"><button class="check" title="${e.kind === "pay" ? "Paycheck landed" : "Bill came out"}" aria-label="${e.kind === "pay" ? "Mark paycheck received" : "Mark " + esc(e.name) + " paid"}" data-a="ev" data-key="${esc(e.key)}">${ICON_CHECK}</button></td>
+        <td class="act">${e.budget ? `<button class="check" title="Add a ${esc(e.name.toLowerCase())} purchase" aria-label="Add a ${esc(e.name)} purchase" data-a="spend" data-id="${e.bill.id}">${ICON_PLUS}</button>` : `<button class="check" title="${e.kind === "pay" ? "Paycheck landed" : "Bill came out"}" aria-label="${e.kind === "pay" ? "Mark paycheck received" : "Mark " + esc(e.name) + " paid"}" data-a="ev" data-key="${esc(e.key)}">${ICON_CHECK}</button>`}</td>
       </tr>`;
     }
   });
@@ -741,9 +760,10 @@ function vBills() {
   else html += `<div class="list" style="border-top:1px solid var(--line)">${sorted.map(b => {
     const nd = nextDue(b);
     return `<div class="li">
-      <div class="grow"><div class="item-name">${esc(b.name)} ${b.autopay ? '<span class="tag accent">Autopay</span>' : ""}</div>
-      <div class="item-sub">${billWhen(b)}${nd ? " · next " + fmtDate(nd) : ""}</div></div>
+      <div class="grow"><div class="item-name">${esc(b.name)} ${b.kind === "budget" ? '<span class="tag">Budget</span>' : b.autopay ? '<span class="tag accent">Autopay</span>' : ""}</div>
+      <div class="item-sub">${b.kind === "budget" && nd ? `${fmt(spentIn(b, nd))} spent so far · ${FREQ[b.freq].label.toLowerCase()} through ${shortDate(nd)}` : billWhen(b) + (nd ? " · next " + fmtDate(nd) : "")}</div></div>
       <div class="amt num">${fmt(b.amount)}</div>
+      ${b.kind === "budget" ? `<button class="btn small" data-a="spend" data-id="${b.id}">+ Add</button>` : ""}
       <button class="btn small" data-a="edit-bill" data-id="${b.id}">Edit</button>
     </div>`;
   }).join("")}</div>`;
@@ -776,7 +796,7 @@ function vDebts() {
 function vActivity() {
   let html = `<section class="card"><div class="pad section-head"><h2>Activity</h2><button class="btn small" data-a="txn">Add a transaction</button></div>`;
   if (!state.log.length) return html + `<div class="empty">Every time you check off a bill, log a paycheck, update the balance, or pay a debt, it shows up here. You can undo any of it.</div></section>`;
-  const TYPE = { bill: "Bill", pay: "Paycheck", extra: "Debt payment", adjust: "Balance update", txn: "Transaction" };
+  const TYPE = { spend: "Purchase", bill: "Bill", pay: "Paycheck", extra: "Debt payment", adjust: "Balance update", txn: "Transaction" };
   html += `<div class="list" style="border-top:1px solid var(--line)">${state.log.map(l => `
     <div class="li">
       <div class="grow"><div class="item-name">${esc(l.label)} <span class="tag">${TYPE[l.type] || l.type}</span></div>
@@ -956,7 +976,8 @@ function dlgBill(id) {
     <div class="two">${moneyField("ba", "Amount", b.amount)}<div class="field"><label for="bf">How often</label><select id="bf" name="bf">${opts}</select></div></div>
     <div class="field" id="bd-f"><label for="bd">Day of the month it's due</label><input id="bd" name="bd" inputmode="numeric" placeholder="15" value="${b.day || ""}"><span class="hint">Use 31 for "last day of the month".</span></div>
     <div class="field" id="bx-f"><label for="bx">Next due date</label><input type="date" id="bx" name="bx" value="${b.anchor || today()}"></div>
-    <label class="inline-check"><input type="checkbox" id="bp" name="bp" ${b.autopay ? "checked" : ""}> Comes out automatically (autopay)</label>
+    <label class="inline-check"><input type="checkbox" id="bk" name="bk" ${b.kind === "budget" ? "checked" : ""}> Spending budget: I'll add purchases as they happen (like fuel)</label>
+    <label class="inline-check" id="bp-f"><input type="checkbox" id="bp" name="bp" ${b.autopay ? "checked" : ""}> Comes out automatically (autopay)</label>
     <div class="dlg-actions">${id ? `<button type="button" class="btn danger" id="bill-del">Delete</button>` : ""}${cancelBtn}<button class="btn primary" value="save">${id ? "Save" : "Add bill"}</button></div>`,
     f => {
       const name = f.bn.value.trim(); if (!name) return "Give the bill a name";
@@ -965,7 +986,7 @@ function dlgBill(id) {
       if (freq === "monthly" && !(day >= 1 && day <= 31)) return "Enter the due day, 1 to 31";
       if (freq !== "monthly" && !f.bx.value) return "Pick the next due date";
       const T = today();
-      const data = { name, amount: a, freq, day: freq === "monthly" ? day : null, anchor: freq === "monthly" ? T : f.bx.value, autopay: f.bp.checked, active: true };
+      const data = { name, amount: a, freq, day: freq === "monthly" ? day : null, anchor: freq === "monthly" ? T : f.bx.value, autopay: f.bp.checked, kind: f.bk.checked ? "budget" : "bill", active: true };
       if (id) {
         const cur = state.bills.find(x => x.id === id);
         const schedChanged = cur.freq !== freq || cur.day !== data.day || (freq !== "monthly" && cur.anchor !== data.anchor);
@@ -977,8 +998,8 @@ function dlgBill(id) {
       }
     },
     f => {
-      const sync = () => { const m = f.bf.value === "monthly"; $("#bd-f").hidden = !m; $("#bx-f").hidden = m; };
-      f.bf.addEventListener("change", sync); sync();
+      const sync = () => { const m = f.bf.value === "monthly"; $("#bd-f").hidden = !m; $("#bx-f").hidden = m; $("#bp-f").hidden = f.bk.checked; };
+      f.bf.addEventListener("change", sync); f.bk.addEventListener("change", sync); sync();
       const del = $("#bill-del"); if (del) del.addEventListener("click", () => { state.bills = state.bills.filter(x => x.id !== id); dlg.close(); commit("Bill deleted"); });
     });
 }
@@ -1097,6 +1118,31 @@ async function checkImport() {
     () => { state = inc; commit("Imported " + inc.bills.length + " bills and " + inc.pays.length + " paychecks"); });
 }
 
+function dlgSpend(id) {
+  const b = state.bills.find(x => x.id === id);
+  if (!b) return;
+  const end = currentBudgetEnd(b);
+  const spent = end ? spentIn(b, end) : 0;
+  const nm = esc(b.name.toLowerCase());
+  openDlg(`<h3>Add ${nm} purchase</h3>
+    <p class="muted" style="margin:0">${fmt(spent)} of ${fmt(b.amount)} spent ${end ? "through " + shortDate(end) : ""}${spent > b.amount ? ` · <b class="neg">${fmt(spent - b.amount)} over</b>` : ""}</p>
+    ${moneyField("sa", "Amount", null)}
+    <div class="two">
+      <div class="field"><label for="sd">Date</label><input type="date" id="sd" name="sd" value="${today()}" max="${today()}"></div>
+      <div class="field"><label for="sn">Note (optional)</label><input id="sn" name="sn" maxlength="40" placeholder="Shell, Casey's…"></div>
+    </div>
+    <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="add">Add purchase</button></div>`,
+    f => {
+      const a = parseMoney(f.sa.value);
+      if (!a || isNaN(a) || a <= 0) return "Enter the amount";
+      const d = f.sd.value || today();
+      state.balance -= a; state.balanceAt = new Date().toISOString();
+      logEntry({ type: "spend", label: b.name, amount: -a, billId: b.id, d, note: f.sn.value.trim() || (d !== today() ? "On " + shortDate(d) : "") });
+      const e2 = currentBudgetEnd(b), left = e2 ? b.amount - spentIn(b, e2) : 0;
+      commit(`${b.name} ${fmt(a)} added · ${left >= 0 ? fmt(left) + " left" : fmt(-left) + " over"}`, state.log[0].id);
+    });
+}
+
 function dlgReset() {
   openDlg(`<h3>Erase everything?</h3><p style="margin:0">This deletes your balance, paycheck, bills, debts and activity on every device. It can't be undone.</p>
     <div class="dlg-actions">${cancelBtn}<button class="btn primary" value="erase" style="background:var(--neg);border-color:var(--neg)">Erase everything</button></div>`,
@@ -1152,6 +1198,7 @@ document.addEventListener("click", e => {
   else if (a === "add-debt") dlgDebt(null);
   else if (a === "edit-debt") dlgDebt(id);
   else if (a === "extra") dlgExtra();
+  else if (a === "spend") dlgSpend(id);
   else if (a === "txn") dlgTxn();
   else if (a === "ev") dlgEvent(el.dataset.key);
   else if (a === "prefs") dlgPrefs();
